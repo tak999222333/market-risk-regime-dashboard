@@ -1,6 +1,10 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+@theme {
+  --font-display: "DM Serif Display", "Noto Serif TC", serif;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
@@ -119,6 +123,7 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-family: "DM Sans", "Noto Sans TC", ui-sans-serif, system-ui, sans-serif;
   }
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]),
@@ -131,6 +136,19 @@
   input[type="radio"]:not(:disabled) {
     @apply cursor-pointer;
   }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  main > section {
+    animation: rise-in 420ms cubic-bezier(0.23, 1, 0.32, 1) both;
+  }
+  main > section:nth-of-type(2) { animation-delay: 50ms; }
+  main > section:nth-of-type(3) { animation-delay: 100ms; }
+}
+
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 @layer components {
