@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { dailyFreshness, determineMarketRegime, getMarketScopeMeta, parseStockConnectDailyPayload, scoreCreditSpread, scoreMarketCredit, scoreMarketVix, scoreOfrConfidenceImpact, scorePercentChange, scoreVix, stabilizeSnapshotWithPrevious } from "./marketData";
-import type { MarketSnapshot } from "../shared/marketTypes";
+import { applySupplementaryConfidence, dailyFreshness, determineMarketRegime, getMarketScopeMeta, parseStockConnectDailyPayload, scoreCreditSpread, scoreMarketCredit, scoreMarketVix, scoreOfrConfidenceImpact, scorePercentChange, scoreVix, stabilizeSnapshotWithPrevious } from "./marketData";
+import type { MarketSnapshot, SupplementalSignal } from "../shared/marketTypes";
 
 describe("market data factor transforms", () => {
   it("maps positive market returns to positive equity scores", () => {
@@ -60,6 +60,27 @@ describe("market data factor transforms", () => {
     expect(scoreOfrConfidenceImpact(-0.5)).toBe(0);
     expect(scoreOfrConfidenceImpact(0.4)).toBe(-2);
     expect(scoreOfrConfidenceImpact(10)).toBe(-6);
+  });
+
+  it("keeps five-factor composite logic isolated when supplemental sources fail", () => {
+    const unavailableOfr: SupplementalSignal = {
+      id: "ofrFinancialStress", name: "全球金融壓力", shortName: "OFR FSI", status: "unavailable", latestValue: "—", source: "OFR", sourceUrl: "https://example.test/ofr", frequency: "日度（約 2 工作日延遲）", updatedAt: "未取得", freshness: "unavailable", explanation: "timeout", confidenceImpact: 0, compositeImpact: 0,
+    };
+    const fiveFactorComposite = 32;
+    expect(applySupplementaryConfidence(85, [unavailableOfr])).toBe(85);
+    expect(unavailableOfr.compositeImpact).toBe(0);
+    expect(fiveFactorComposite).toBe(32);
+  });
+
+  it("applies conflicting supplemental evidence only to confidence within the defined cap", () => {
+    const ofrCaution: SupplementalSignal = {
+      id: "ofrFinancialStress", name: "全球金融壓力", shortName: "OFR FSI", status: "caution", latestValue: "OFR FSI 2.000", source: "OFR", sourceUrl: "https://example.test/ofr", frequency: "日度（約 2 工作日延遲）", updatedAt: "2024-06-20", freshness: "fresh", explanation: "stress", confidenceImpact: -6, compositeImpact: 0,
+    };
+    const stockConnectNeutral: SupplementalSignal = {
+      id: "stockConnectActivity", name: "滬深港通活躍度", shortName: "Stock Connect", status: "neutral", latestValue: "北向 100 · 南向 100", source: "HKEX", sourceUrl: "https://example.test/hkex", frequency: "日終", updatedAt: "2024-06-20", freshness: "fresh", explanation: "turnover only", confidenceImpact: 0, compositeImpact: 0,
+    };
+    expect(applySupplementaryConfidence(85, [ofrCaution, stockConnectNeutral])).toBe(79);
+    expect(ofrCaution.compositeImpact + stockConnectNeutral.compositeImpact).toBe(0);
   });
 
   it("parses official Stock Connect total turnover without treating it as net flow", () => {

@@ -212,6 +212,11 @@ function unavailableSupplemental(id: SupplementalSignal["id"], name: string, sho
   return { id, name, shortName, status: "unavailable", latestValue: "—", source, sourceUrl, frequency, updatedAt: "未取得", freshness: "unavailable", explanation: error, confidenceImpact: 0, compositeImpact: 0 };
 }
 
+export function applySupplementaryConfidence(baseConfidence: number, signals: SupplementalSignal[]) {
+  const confidenceImpact = signals.reduce((total, signal) => total + signal.confidenceImpact, 0);
+  return Math.max(40, baseConfidence + confidenceImpact);
+}
+
 function buildOfrSupplemental(result: { data: OfrFsiPoint | null; error: string | null }): SupplementalSignal {
   if (!result.data) return unavailableSupplemental("ofrFinancialStress", "全球金融壓力", "OFR FSI", "U.S. Office of Financial Research", "https://www.financialresearch.gov/financial-stress-index/", "日度（約 2 工作日延遲）", result.error ?? "OFR 資料來源沒有回應");
   const point = result.data;
@@ -285,8 +290,7 @@ export async function fetchMarketSnapshot(scope: MarketScope): Promise<MarketSna
   const rawConfidence = calculateConfidence(usable);
   const supplementary = [buildOfrSupplemental(ofrResult), ...(scope === "global" ? [] : [buildStockConnectSupplemental(stockConnectResult)])];
   const baseConfidence = Math.round(rawConfidence * (0.5 + (usable.length / factors.length) * 0.5));
-  const confidenceImpact = supplementary.reduce((total, signal) => total + signal.confidenceImpact, 0);
-  return { market: scope, calculatedAt: new Date().toISOString(), compositeScore, regime: determineMarketRegime(scope, compositeScore), confidence: Math.max(40, baseConfidence + confidenceImpact), dataStatus: usable.length === factors.length ? "fresh" : "partial", updateIntervalSeconds: 60, factors, supplementary };
+  return { market: scope, calculatedAt: new Date().toISOString(), compositeScore, regime: determineMarketRegime(scope, compositeScore), confidence: applySupplementaryConfidence(baseConfidence, supplementary), dataStatus: usable.length === factors.length ? "fresh" : "partial", updateIntervalSeconds: 60, factors, supplementary };
 }
 
 export async function refreshAndStoreMarketSnapshot(scope: MarketScope, force = false): Promise<MarketSnapshot> {

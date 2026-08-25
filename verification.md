@@ -43,3 +43,7 @@
 診斷確認提示並非外部請求逾時，而是 FRED 的 Trade Weighted Dollar Index 與 USD/CNY 日終序列因採用曆日判斷而被過早標示為 stale。新規則按交易日計算：發布後兩個交易日內為 fresh、三至五個交易日披露為 delayed、超過五個交易日才視為 stale。回歸測試涵蓋週末；刷新後全球、香港及中國均為 `dataStatus=fresh`，沒有 stale 或 unavailable 因子，美元及 USD/CNY 皆為 fresh。
 
 修正後連續執行五次強制手動刷新：全球、香港及中國每次均為 `dataStatus=fresh`；Dollar index 與 USD/CNY 每次均為 fresh；置信度穩定於全球 86%、香港 68%、中國 85%。
+
+正式環境最終驗證完成。部署傳播後，正式強制刷新回傳全球、香港與中國均為 `dataStatus=fresh`；Dollar index 與 USD/CNY 均為 fresh，沒有 stale 或 unavailable 因子。OFR FSI 及 HKEX Stock Connect 輔助訊號同樣為 fresh，兩者的綜合分數影響均為 0，確認補充資料不會降低主結論的完整性。
+
+輔助訊號保護測試完成。OFR 來源 unavailable 時，該輔助訊號的置信度及綜合分數影響均為 0，五因子主分數保持不變；OFR 壓力訊號（−6 置信度）與 Stock Connect 中性訊號並存時，只會按上限把置信度由 85% 調整至 79%，綜合分數仍維持原值。測試套件現共有 15 項測試全部通過。
