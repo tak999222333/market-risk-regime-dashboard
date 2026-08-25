@@ -1,17 +1,7 @@
 import { int, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
 
-/**
- * Core user table backing auth flow.
- * Extend this file with additional tables as your product grows.
- * Columns use camelCase to match both database fields and generated types.
- */
 export const users = mysqlTable("users", {
-  /**
-   * Surrogate primary key. Auto-incremented numeric value managed by the database.
-   * Use this for relations between tables.
-   */
   id: int("id").autoincrement().primaryKey(),
-  /** Manus OAuth identifier (openId) returned from the OAuth callback. Unique per user. */
   openId: varchar("openId", { length: 64 }).notNull().unique(),
   name: text("name"),
   email: varchar("email", { length: 320 }),
@@ -24,6 +14,7 @@ export const users = mysqlTable("users", {
 
 export const marketSnapshots = mysqlTable("marketSnapshots", {
   id: int("id").autoincrement().primaryKey(),
+  market: mysqlEnum("market", ["global", "hongKong", "china"]).default("global").notNull(),
   compositeScore: int("compositeScore").notNull(),
   regime: varchar("regime", { length: 16 }).notNull(),
   confidence: int("confidence").notNull(),
@@ -35,5 +26,3 @@ export const marketSnapshots = mysqlTable("marketSnapshots", {
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 export type MarketSnapshotRow = typeof marketSnapshots.$inferSelect;
-
-// TODO: Add your tables here

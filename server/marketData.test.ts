@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { scoreCreditSpread, scorePercentChange, scoreVix, stabilizeSnapshotWithPrevious } from "./marketData";
+import { determineMarketRegime, getMarketScopeMeta, scoreCreditSpread, scoreMarketCredit, scoreMarketVix, scorePercentChange, scoreVix, stabilizeSnapshotWithPrevious } from "./marketData";
 import type { MarketSnapshot } from "../shared/marketTypes";
 
 describe("market data factor transforms", () => {
@@ -34,5 +34,18 @@ describe("market data factor transforms", () => {
     expect(stabilized.factors[0]?.score).toBe(42);
     expect(stabilized.factors[0]?.freshness).toBe("stale");
     expect(stabilized.confidence).toBe(72);
+  });
+
+  it("exposes distinct labels for Hong Kong and China regimes", () => {
+    expect(getMarketScopeMeta("hongKong").shortLabel).toBe("香港");
+    expect(getMarketScopeMeta("china").shortLabel).toBe("中國");
+  });
+
+  it("uses independently calibrated thresholds for Hong Kong and China", () => {
+    expect(determineMarketRegime("global", 35)).toBe("中性");
+    expect(determineMarketRegime("hongKong", 35)).toBe("Risk-on");
+    expect(determineMarketRegime("china", 32)).toBe("Risk-on");
+    expect(scoreMarketVix("hongKong", 21)).toBe(0);
+    expect(scoreMarketCredit("china", 4.2)).toBe(0);
   });
 });

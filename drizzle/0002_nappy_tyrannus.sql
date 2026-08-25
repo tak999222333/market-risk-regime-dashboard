@@ -1,0 +1,1 @@
+ALTER TABLE `marketSnapshots` ADD `market` enum('global','hongKong','china') DEFAULT 'global' NOT NULL;
