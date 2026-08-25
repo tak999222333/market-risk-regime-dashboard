@@ -36,7 +36,6 @@ const snapshotCache = new Map<MarketScope, { snapshot: MarketSnapshot; storedAt:
 const refreshInFlight = new Map<MarketScope, Promise<MarketSnapshot>>();
 const sourceCache = new Map<string, { value: unknown; storedAt: number }>();
 const sourceInFlight = new Map<string, Promise<unknown>>();
-const delay = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
 
 export function clampScore(value: number) { return Math.max(-100, Math.min(100, Math.round(value))); }
 export function scorePercentChange(changePercent: number, sensitivity = 55) { return clampScore(changePercent * sensitivity); }
@@ -148,13 +147,14 @@ export async function fetchMarketSnapshot(scope: MarketScope): Promise<MarketSna
   const crossPromise = scope === "global"
     ? settled(resilient("coingecko:bitcoin", 60_000, fetchBitcoin))
     : settled(resilient(`nasdaq:${config.cross.symbol}`, 90_000, () => fetchNasdaqQuote(config.cross.symbol!, "etf")));
-  const vixResult = await settled(resilient("fred:vix", 15 * 60_000, () => fetchFredSeries(FRED_SERIES.vix)));
-  await delay(120);
-  const creditResult = await settled(resilient("fred:hy-oas", 15 * 60_000, () => fetchFredSeries(FRED_SERIES.highYieldSpread)));
-  await delay(120);
   const currencySeries = scope === "global" ? FRED_SERIES.dollarIndex : FRED_SERIES.yuanPerUsd;
-  const currencyResult = await settled(resilient(`fred:${currencySeries}`, 15 * 60_000, () => fetchFredSeries(currencySeries)));
-  const [equityResult, crossResult] = await Promise.all([equityPromise, crossPromise]);
+  const [vixResult, creditResult, currencyResult, equityResult, crossResult] = await Promise.all([
+    settled(resilient("fred:vix", 15 * 60_000, () => fetchFredSeries(FRED_SERIES.vix))),
+    settled(resilient("fred:hy-oas", 15 * 60_000, () => fetchFredSeries(FRED_SERIES.highYieldSpread))),
+    settled(resilient(`fred:${currencySeries}`, 15 * 60_000, () => fetchFredSeries(currencySeries))),
+    equityPromise,
+    crossPromise,
+  ]);
   const factors: LiveMarketFactor[] = [];
 
   if (equityResult.data) {
