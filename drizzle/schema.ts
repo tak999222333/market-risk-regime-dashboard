@@ -22,7 +22,18 @@ export const users = mysqlTable("users", {
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
 });
 
+export const marketSnapshots = mysqlTable("marketSnapshots", {
+  id: int("id").autoincrement().primaryKey(),
+  compositeScore: int("compositeScore").notNull(),
+  regime: varchar("regime", { length: 16 }).notNull(),
+  confidence: int("confidence").notNull(),
+  dataStatus: varchar("dataStatus", { length: 16 }).notNull(),
+  payload: text("payload").notNull(),
+  calculatedAt: timestamp("calculatedAt").defaultNow().notNull(),
+});
+
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
+export type MarketSnapshotRow = typeof marketSnapshots.$inferSelect;
 
 // TODO: Add your tables here

@@ -8,6 +8,13 @@
       "when": 1787568652883,
       "tag": "0000_absent_scourge",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1787665442664,
+      "tag": "0001_strong_gauntlet",
+      "breakpoints": true
     }
   ]
 }

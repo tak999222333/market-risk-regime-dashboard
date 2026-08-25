@@ -1,6 +1,7 @@
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users } from "../drizzle/schema";
+import { InsertUser, marketSnapshots, users } from "../drizzle/schema";
+import type { MarketSnapshot } from "../shared/marketTypes";
 import { ENV } from './_core/env';
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -87,6 +88,35 @@ export async function getUserByOpenId(openId: string) {
   const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
 
   return result.length > 0 ? result[0] : undefined;
+}
+
+export async function insertMarketSnapshot(snapshot: MarketSnapshot): Promise<void> {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Market data] Database not available; snapshot is not persisted");
+    return;
+  }
+  await db.insert(marketSnapshots).values({
+    compositeScore: snapshot.compositeScore,
+    regime: snapshot.regime,
+    confidence: snapshot.confidence,
+    dataStatus: snapshot.dataStatus,
+    payload: JSON.stringify(snapshot),
+    calculatedAt: new Date(snapshot.calculatedAt),
+  });
+}
+
+export async function getRecentMarketSnapshots(limit = 72): Promise<MarketSnapshot[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.select().from(marketSnapshots).orderBy(desc(marketSnapshots.calculatedAt)).limit(limit);
+  return rows.flatMap((row) => {
+    try {
+      return [JSON.parse(row.payload) as MarketSnapshot];
+    } catch {
+      return [];
+    }
+  }).reverse();
 }
 
 // TODO: add feature queries here as your schema grows.

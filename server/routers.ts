@@ -2,6 +2,8 @@ import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router } from "./_core/trpc";
+import { getRecentMarketSnapshots } from "./db";
+import { refreshAndStoreMarketSnapshot } from "./marketData";
 
 export const appRouter = router({
     // if you need to use socket.io, read and register route in server/_core/index.ts, all api should start with '/api/' so that the gateway can route correctly
@@ -14,6 +16,19 @@ export const appRouter = router({
       return {
         success: true,
       } as const;
+    }),
+  }),
+
+  marketRegime: router({
+    current: publicProcedure.query(async () => {
+      const snapshot = await refreshAndStoreMarketSnapshot();
+      const history = await getRecentMarketSnapshots();
+      return { snapshot, history };
+    }),
+    refresh: publicProcedure.mutation(async () => {
+      const snapshot = await refreshAndStoreMarketSnapshot(true);
+      const history = await getRecentMarketSnapshots();
+      return { snapshot, history };
     }),
   }),
 
