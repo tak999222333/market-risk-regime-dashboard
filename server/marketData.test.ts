@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { determineMarketRegime, getMarketScopeMeta, scoreCreditSpread, scoreMarketCredit, scoreMarketVix, scorePercentChange, scoreVix, stabilizeSnapshotWithPrevious } from "./marketData";
+import { determineMarketRegime, getMarketScopeMeta, parseStockConnectDailyPayload, scoreCreditSpread, scoreMarketCredit, scoreMarketVix, scoreOfrConfidenceImpact, scorePercentChange, scoreVix, stabilizeSnapshotWithPrevious } from "./marketData";
 import type { MarketSnapshot } from "../shared/marketTypes";
 
 describe("market data factor transforms", () => {
@@ -47,5 +47,16 @@ describe("market data factor transforms", () => {
     expect(determineMarketRegime("china", 32)).toBe("Risk-on");
     expect(scoreMarketVix("hongKong", 21)).toBe(0);
     expect(scoreMarketCredit("china", 4.2)).toBe(0);
+  });
+
+  it("uses financial stress only as a capped confidence guardrail", () => {
+    expect(scoreOfrConfidenceImpact(-0.5)).toBe(0);
+    expect(scoreOfrConfidenceImpact(0.4)).toBe(-2);
+    expect(scoreOfrConfidenceImpact(10)).toBe(-6);
+  });
+
+  it("parses official Stock Connect total turnover without treating it as net flow", () => {
+    const raw = `tabData = [{"date":"2026-08-25","market":"SSE Northbound","tradingDay":1,"content":[{"table":{"tr":[{"td":[["100"]]}]}}]},{"date":"2026-08-25","market":"SZSE Northbound","tradingDay":1,"content":[{"table":{"tr":[{"td":[["200"]]}]}}]},{"date":"2026-08-25","market":"SSE Southbound","tradingDay":1,"content":[{"table":{"tr":[{"td":[["300"]]}]}}]},{"date":"2026-08-25","market":"SZSE Southbound","tradingDay":1,"content":[{"table":{"tr":[{"td":[["400"]]}]}}]}];`;
+    expect(parseStockConnectDailyPayload(raw)).toEqual({ date: "2026-08-25", northboundTurnover: 300, southboundTurnover: 700 });
   });
 });

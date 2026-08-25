@@ -1,10 +1,12 @@
 import { calculateCompositeScore, calculateConfidence, determineRegime } from "../shared/riskRegime";
-import { MARKET_SCOPES, MARKET_SCOPE_META, type DataFreshness, type LiveMarketFactor, type MarketFactorKey, type MarketScope, type MarketSnapshot } from "../shared/marketTypes";
+import { MARKET_SCOPES, MARKET_SCOPE_META, type DataFreshness, type LiveMarketFactor, type MarketFactorKey, type MarketScope, type MarketSnapshot, type SupplementalSignal } from "../shared/marketTypes";
 import * as db from "./db";
 
 type FredPoint = { date: string; value: number; previous: number | null };
 type NasdaqQuote = { last: number; changePercent: number; updatedAt: string };
 type BitcoinQuote = { price: number; changePercent: number; updatedAt: string };
+type OfrFsiPoint = { value: number; updatedAt: string };
+type StockConnectPoint = { date: string; northboundTurnover: number; southboundTurnover: number };
 
 const FRED_SERIES = { sp500: "SP500", vix: "VIXCLS", highYieldSpread: "BAMLH0A0HYM2", dollarIndex: "DTWEXBGS", yuanPerUsd: "DEXCHUS" } as const;
 
@@ -49,6 +51,10 @@ export function determineMarketRegime(scope: MarketScope, score: number): Market
 }
 export function scoreMarketVix(scope: MarketScope, vix: number) { return clampScore((MARKET_THRESHOLDS[scope].vixNeutral - vix) * 5); }
 export function scoreMarketCredit(scope: MarketScope, spread: number) { return clampScore((MARKET_THRESHOLDS[scope].creditNeutral - spread) * 35); }
+export function scoreOfrConfidenceImpact(value: number) {
+  if (value <= 0) return 0;
+  return -Math.min(6, Math.max(2, Math.round(value * 3)));
+}
 
 function parseNumeric(value: string | undefined) {
   if (!value) return Number.NaN;
@@ -98,6 +104,56 @@ async function fetchBitcoin(): Promise<BitcoinQuote> {
   return { price: quote.usd ?? 0, changePercent: quote.usd_24h_change ?? 0, updatedAt: quote.last_updated_at ? new Date(quote.last_updated_at * 1000).toISOString() : new Date().toISOString() };
 }
 
+async function fetchOfrFsi(): Promise<OfrFsiPoint> {
+  const response = await fetch("https://www.financialresearch.gov/financial-stress-index/data/fsi.json", {
+    headers: { Accept: "application/json", Range: "bytes=-8192", "User-Agent": "Mozilla/5.0 (compatible; MarketRegimePulse/1.0)" },
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!response.ok) throw new Error(`OFR FSI returned ${response.status}`);
+  const tail = await response.text();
+  const observations = Array.from(tail.matchAll(/\[\s*(\d{13})\s*,\s*(-?\d+(?:\.\d+)?)\s*\]/g));
+  const latest = observations.at(-1);
+  if (!latest?.[1] || !latest[2]) throw new Error("OFR FSI range response has no parseable latest observation");
+  const value = Number(latest[2]);
+  if (!Number.isFinite(value)) throw new Error("OFR FSI latest value is invalid");
+  return { value, updatedAt: new Date(Number(latest[1])).toISOString() };
+}
+
+function parseHkexNumber(value: unknown) {
+  if (typeof value !== "string" && typeof value !== "number") return Number.NaN;
+  return Number(String(value).replace(/,/g, ""));
+}
+
+export function parseStockConnectDailyPayload(raw: string): StockConnectPoint | null {
+  const payload = raw.trim().replace(/^tabData\s*=\s*/, "").replace(/;\s*$/, "");
+  const records = JSON.parse(payload) as Array<{ date?: string; market?: string; tradingDay?: number; content?: Array<{ table?: { tr?: Array<{ td?: string[][] }> } }> }>;
+  const getTurnover = (market: string) => {
+    const record = records.find((item) => item.market === market && item.tradingDay === 1);
+    return parseHkexNumber(record?.content?.[0]?.table?.tr?.[0]?.td?.[0]?.[0]);
+  };
+  const sseNorth = getTurnover("SSE Northbound");
+  const szseNorth = getTurnover("SZSE Northbound");
+  const sseSouth = getTurnover("SSE Southbound");
+  const szseSouth = getTurnover("SZSE Southbound");
+  const date = records.find((item) => item.tradingDay === 1)?.date;
+  if (!date || ![sseNorth, szseNorth, sseSouth, szseSouth].every(Number.isFinite)) return null;
+  return { date, northboundTurnover: sseNorth + szseNorth, southboundTurnover: sseSouth + szseSouth };
+}
+
+async function fetchHkexStockConnect(): Promise<StockConnectPoint> {
+  const hongKongNow = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Hong_Kong" }));
+  for (let offset = 0; offset < 8; offset += 1) {
+    const date = new Date(hongKongNow);
+    date.setDate(date.getDate() - offset);
+    const stamp = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}`;
+    const response = await fetch(`https://www.hkex.com.hk/eng/csm/DailyStat/data_tab_daily_${stamp}e.js`, { headers: { Accept: "application/javascript", "User-Agent": "Mozilla/5.0 (compatible; MarketRegimePulse/1.0)" }, signal: AbortSignal.timeout(15_000) });
+    if (!response.ok) continue;
+    const parsed = parseStockConnectDailyPayload(await response.text());
+    if (parsed) return parsed;
+  }
+  throw new Error("HKEX Stock Connect has no parsable recent trading-day file");
+}
+
 async function resilient<T>(key: string, maxAgeMs: number, loader: () => Promise<T>): Promise<T> {
   const cached = sourceCache.get(key) as { value: T; storedAt: number } | undefined;
   if (cached && Date.now() - cached.storedAt < maxAgeMs) return cached.value;
@@ -140,6 +196,23 @@ function backupSnapshot(snapshot: MarketSnapshot, previous: MarketSnapshot | und
 
 export function stabilizeSnapshotWithPrevious(snapshot: MarketSnapshot, previous: MarketSnapshot | undefined) { return backupSnapshot(snapshot, previous); }
 
+function unavailableSupplemental(id: SupplementalSignal["id"], name: string, shortName: string, source: string, sourceUrl: string, frequency: SupplementalSignal["frequency"], error: string): SupplementalSignal {
+  return { id, name, shortName, status: "unavailable", latestValue: "—", source, sourceUrl, frequency, updatedAt: "未取得", freshness: "unavailable", explanation: error, confidenceImpact: 0, compositeImpact: 0 };
+}
+
+function buildOfrSupplemental(result: { data: OfrFsiPoint | null; error: string | null }): SupplementalSignal {
+  if (!result.data) return unavailableSupplemental("ofrFinancialStress", "全球金融壓力", "OFR FSI", "U.S. Office of Financial Research", "https://www.financialresearch.gov/financial-stress-index/", "日度（約 2 工作日延遲）", result.error ?? "OFR 資料來源沒有回應");
+  const point = result.data;
+  const confidenceImpact = scoreOfrConfidenceImpact(point.value);
+  return { id: "ofrFinancialStress", name: "全球金融壓力", shortName: "OFR FSI", status: confidenceImpact < 0 ? "caution" : "supportive", latestValue: `OFR FSI ${point.value.toFixed(3)}`, source: "U.S. Office of Financial Research", sourceUrl: "https://www.financialresearch.gov/financial-stress-index/", frequency: "日度（約 2 工作日延遲）", updatedAt: point.updatedAt, freshness: dailyFreshness(point.updatedAt.slice(0, 10)), explanation: confidenceImpact < 0 ? "OFR FSI 高於 0，代表日度系統性金融壓力高於歷史平均；本程式只下調置信度，不改變綜合分數。" : "OFR FSI 低於或等於 0，代表日度系統性金融壓力未高於歷史平均；本程式不因此上調綜合分數。", confidenceImpact, compositeImpact: 0 };
+}
+
+function buildStockConnectSupplemental(result: { data: StockConnectPoint | null; error: string | null }): SupplementalSignal {
+  if (!result.data) return unavailableSupplemental("stockConnectActivity", "滬深港通活躍度", "Stock Connect", "HKEX Historical Daily", "https://www.hkex.com.hk/Mutual-Market/Stock-Connect/Statistics/Historical-Daily?sc_lang=en", "日終", result.error ?? "HKEX Stock Connect 資料來源沒有回應");
+  const point = result.data;
+  return { id: "stockConnectActivity", name: "滬深港通活躍度", shortName: "Stock Connect", status: "neutral", latestValue: `北向 ${formatNumber(point.northboundTurnover)} · 南向 ${formatNumber(point.southboundTurnover)}`, source: "HKEX Historical Daily", sourceUrl: "https://www.hkex.com.hk/Mutual-Market/Stock-Connect/Statistics/Historical-Daily?sc_lang=en", frequency: "日終", updatedAt: point.date, freshness: dailyFreshness(point.date), explanation: "此為 HKEX 公開的每日總成交活躍度，不是淨買入／賣出，因此只作中港跨境參與度背景，不改變綜合分數或置信度。", confidenceImpact: 0, compositeImpact: 0 };
+}
+
 export async function fetchMarketSnapshot(scope: MarketScope): Promise<MarketSnapshot> {
   const config = MARKET_CONFIG[scope];
   const equityClass = scope === "global" ? "index" : "etf" as const;
@@ -148,12 +221,14 @@ export async function fetchMarketSnapshot(scope: MarketScope): Promise<MarketSna
     ? settled(resilient("coingecko:bitcoin", 60_000, fetchBitcoin))
     : settled(resilient(`nasdaq:${config.cross.symbol}`, 90_000, () => fetchNasdaqQuote(config.cross.symbol!, "etf")));
   const currencySeries = scope === "global" ? FRED_SERIES.dollarIndex : FRED_SERIES.yuanPerUsd;
-  const [vixResult, creditResult, currencyResult, equityResult, crossResult] = await Promise.all([
+  const [vixResult, creditResult, currencyResult, equityResult, crossResult, ofrResult, stockConnectResult] = await Promise.all([
     settled(resilient("fred:vix", 15 * 60_000, () => fetchFredSeries(FRED_SERIES.vix))),
     settled(resilient("fred:hy-oas", 15 * 60_000, () => fetchFredSeries(FRED_SERIES.highYieldSpread))),
     settled(resilient(`fred:${currencySeries}`, 15 * 60_000, () => fetchFredSeries(currencySeries))),
     equityPromise,
     crossPromise,
+    settled(resilient("ofr:fsi", 6 * 60 * 60_000, fetchOfrFsi)),
+    scope === "global" ? Promise.resolve({ data: null, error: null } as const) : settled(resilient("hkex:stock-connect", 8 * 60 * 60_000, fetchHkexStockConnect)),
   ]);
   const factors: LiveMarketFactor[] = [];
 
@@ -196,7 +271,10 @@ export async function fetchMarketSnapshot(scope: MarketScope): Promise<MarketSna
   const usable = factors.filter((factor) => factor.freshness !== "unavailable");
   const compositeScore = calculateCompositeScore(factors);
   const rawConfidence = calculateConfidence(usable);
-  return { market: scope, calculatedAt: new Date().toISOString(), compositeScore, regime: determineMarketRegime(scope, compositeScore), confidence: Math.round(rawConfidence * (0.5 + (usable.length / factors.length) * 0.5)), dataStatus: usable.length === factors.length ? "fresh" : "partial", updateIntervalSeconds: 60, factors };
+  const supplementary = [buildOfrSupplemental(ofrResult), ...(scope === "global" ? [] : [buildStockConnectSupplemental(stockConnectResult)])];
+  const baseConfidence = Math.round(rawConfidence * (0.5 + (usable.length / factors.length) * 0.5));
+  const confidenceImpact = supplementary.reduce((total, signal) => total + signal.confidenceImpact, 0);
+  return { market: scope, calculatedAt: new Date().toISOString(), compositeScore, regime: determineMarketRegime(scope, compositeScore), confidence: Math.max(40, baseConfidence + confidenceImpact), dataStatus: usable.length === factors.length ? "fresh" : "partial", updateIntervalSeconds: 60, factors, supplementary };
 }
 
 export async function refreshAndStoreMarketSnapshot(scope: MarketScope, force = false): Promise<MarketSnapshot> {

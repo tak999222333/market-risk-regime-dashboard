@@ -8,7 +8,7 @@ export const MARKET_SCOPE_META: Record<MarketScope, { label: string; shortLabel:
 };
 
 export type MarketFactorKey = "equity" | "volatility" | "credit" | "safeHaven" | "crossAsset";
-export type DataFrequency = "15 分鐘延遲" | "日終" | "分鐘級";
+export type DataFrequency = "15 分鐘延遲" | "日終" | "日度（約 2 工作日延遲）" | "分鐘級";
 export type DataFreshness = "fresh" | "delayed" | "stale" | "unavailable";
 
 export type LiveMarketFactor = {
@@ -28,6 +28,22 @@ export type LiveMarketFactor = {
   freshness: DataFreshness;
 };
 
+export type SupplementalSignal = {
+  id: "ofrFinancialStress" | "stockConnectActivity";
+  name: string;
+  shortName: string;
+  status: "supportive" | "caution" | "neutral" | "unavailable";
+  latestValue: string;
+  source: string;
+  sourceUrl: string;
+  frequency: DataFrequency;
+  updatedAt: string;
+  freshness: DataFreshness;
+  explanation: string;
+  confidenceImpact: number;
+  compositeImpact: number;
+};
+
 export type MarketSnapshot = {
   market: MarketScope;
   calculatedAt: string;
@@ -37,4 +53,5 @@ export type MarketSnapshot = {
   dataStatus: "fresh" | "partial";
   updateIntervalSeconds: number;
   factors: LiveMarketFactor[];
+  supplementary?: SupplementalSignal[];
 };
