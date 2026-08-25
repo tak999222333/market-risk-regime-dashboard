@@ -22,6 +22,11 @@ const FACTOR_WEIGHTS: Record<MarketFactorKey, number> = {
 };
 
 let cachedSnapshot: { snapshot: MarketSnapshot; storedAt: number } | null = null;
+let refreshInFlight: Promise<MarketSnapshot> | null = null;
+const sourceCache = new Map<string, { value: unknown; storedAt: number }>();
+const sourceInFlight = new Map<string, Promise<unknown>>();
+
+const delay = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
 
 export function clampScore(value: number) {
   return Math.max(-100, Math.min(100, Math.round(value)));
@@ -68,7 +73,6 @@ async function fetchFredSeries(seriesId: string): Promise<FredPoint> {
     signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) throw new Error(`FRED ${seriesId} returned ${response.status}`);
-
   const rows = (await response.text())
     .trim()
     .split(/\r?\n/)
@@ -80,8 +84,7 @@ async function fetchFredSeries(seriesId: string): Promise<FredPoint> {
     .filter((row) => row.date && Number.isFinite(row.value));
   const latest = rows.at(-1);
   if (!latest) throw new Error(`FRED ${seriesId} contains no numeric observations`);
-  const previous = rows.at(-2)?.value ?? null;
-  return { ...latest, previous };
+  return { ...latest, previous: rows.at(-2)?.value ?? null };
 }
 
 async function fetchNasdaqNdx(): Promise<NasdaqQuote> {
@@ -118,6 +121,34 @@ async function fetchBitcoin(): Promise<BitcoinQuote> {
   };
 }
 
+async function readResilientSource<T>(key: string, maxAgeMs: number, loader: () => Promise<T>): Promise<T> {
+  const cached = sourceCache.get(key) as { value: T; storedAt: number } | undefined;
+  if (cached && Date.now() - cached.storedAt < maxAgeMs) return cached.value;
+
+  const running = sourceInFlight.get(key) as Promise<T> | undefined;
+  if (running) {
+    try {
+      return await running;
+    } catch (error) {
+      if (cached) return cached.value;
+      throw error;
+    }
+  }
+
+  const request = loader();
+  sourceInFlight.set(key, request);
+  try {
+    const value = await request;
+    sourceCache.set(key, { value, storedAt: Date.now() });
+    return value;
+  } catch (error) {
+    if (cached) return cached.value;
+    throw error;
+  } finally {
+    sourceInFlight.delete(key);
+  }
+}
+
 async function settled<T>(task: Promise<T>) {
   try {
     return { data: await task, error: null } as const;
@@ -136,15 +167,41 @@ function unavailableFactor(key: MarketFactorKey, name: string, shortName: string
   };
 }
 
+export function stabilizeSnapshotWithPrevious(snapshot: MarketSnapshot, previous: MarketSnapshot | undefined): MarketSnapshot {
+  if (!previous) return snapshot;
+  const priorByKey = new Map(previous.factors.map((factor) => [factor.key, factor]));
+  const factors = snapshot.factors.map((factor) => {
+    if (factor.freshness !== "unavailable") return factor;
+    const prior = priorByKey.get(factor.key);
+    if (!prior) return factor;
+    return {
+      ...prior,
+      freshness: "stale" as const,
+      signal: "來源暫時逾時，已保留最近成功值，未以空值覆蓋結論。",
+      explanation: `上次成功資料已暫時作為備援。原始刷新失敗原因：${factor.explanation}`,
+    };
+  });
+  const hasUnavailable = factors.some((factor) => factor.freshness === "unavailable");
+  const usesFallback = factors.some((factor) => factor.freshness === "stale");
+  return {
+    ...snapshot,
+    factors,
+    dataStatus: hasUnavailable || usesFallback ? "partial" : "fresh",
+    confidence: usesFallback ? Math.max(50, snapshot.confidence - 8) : snapshot.confidence,
+  };
+}
+
 export async function fetchCurrentMarketSnapshot(): Promise<MarketSnapshot> {
-  const [ndxResult, sp500Result, vixResult, creditResult, dollarResult, bitcoinResult] = await Promise.all([
-    settled(fetchNasdaqNdx()),
-    settled(fetchFredSeries(FRED_SERIES.sp500)),
-    settled(fetchFredSeries(FRED_SERIES.vix)),
-    settled(fetchFredSeries(FRED_SERIES.highYieldSpread)),
-    settled(fetchFredSeries(FRED_SERIES.dollarIndex)),
-    settled(fetchBitcoin()),
-  ]);
+  const ndxPromise = settled(readResilientSource("nasdaq-ndx", 90_000, fetchNasdaqNdx));
+  const bitcoinPromise = settled(readResilientSource("coingecko-btc", 60_000, fetchBitcoin));
+  const sp500Result = await settled(readResilientSource("fred-sp500", 15 * 60_000, () => fetchFredSeries(FRED_SERIES.sp500)));
+  await delay(120);
+  const vixResult = await settled(readResilientSource("fred-vix", 15 * 60_000, () => fetchFredSeries(FRED_SERIES.vix)));
+  await delay(120);
+  const creditResult = await settled(readResilientSource("fred-hy-oas", 15 * 60_000, () => fetchFredSeries(FRED_SERIES.highYieldSpread)));
+  await delay(120);
+  const dollarResult = await settled(readResilientSource("fred-dollar", 15 * 60_000, () => fetchFredSeries(FRED_SERIES.dollarIndex)));
+  const [ndxResult, bitcoinResult] = await Promise.all([ndxPromise, bitcoinPromise]);
 
   const factors: LiveMarketFactor[] = [];
   if (ndxResult.data) {
@@ -154,7 +211,7 @@ export async function fetchCurrentMarketSnapshot(): Promise<MarketSnapshot> {
       score: scorePercentChange(quote.changePercent),
       signal: quote.changePercent >= 0 ? "NASDAQ-100 日內走強，支持風險偏好。" : "NASDAQ-100 日內走弱，拖累風險偏好。",
       explanation: "以 Nasdaq-100 的日內百分比變化作為高 beta 股票風險偏好的即時代理。",
-      latestValue: `NDX ${formatNumber(quote.last)}`, change: `${formatSigned(quote.changePercent, "%")}`,
+      latestValue: `NDX ${formatNumber(quote.last)}`, change: formatSigned(quote.changePercent, "%"),
       source: "Nasdaq Quote API", sourceUrl: "https://www.nasdaq.com/market-activity/index/ndx",
       frequency: "15 分鐘延遲", updatedAt: quote.updatedAt, freshness: "delayed",
     });
@@ -236,20 +293,27 @@ export async function fetchCurrentMarketSnapshot(): Promise<MarketSnapshot> {
   const compositeScore = calculateCompositeScore(factors);
   const rawConfidence = calculateConfidence(usableFactors);
   const confidence = Math.round(rawConfidence * (0.5 + (usableFactors.length / factors.length) * 0.5));
-  const dataStatus = usableFactors.length === factors.length ? "fresh" : "partial";
-
   return {
     calculatedAt: new Date().toISOString(), compositeScore, regime: determineRegime(compositeScore), confidence,
-    dataStatus, updateIntervalSeconds: 60, factors,
+    dataStatus: usableFactors.length === factors.length ? "fresh" : "partial",
+    updateIntervalSeconds: 60, factors,
   };
 }
 
 export async function refreshAndStoreMarketSnapshot(force = false): Promise<MarketSnapshot> {
-  if (!force && cachedSnapshot && Date.now() - cachedSnapshot.storedAt < 45_000) {
-    return cachedSnapshot.snapshot;
+  if (!force && cachedSnapshot && Date.now() - cachedSnapshot.storedAt < 45_000) return cachedSnapshot.snapshot;
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = (async () => {
+    const previous = (await db.getRecentMarketSnapshots(1)).at(-1);
+    const fetched = await fetchCurrentMarketSnapshot();
+    const snapshot = stabilizeSnapshotWithPrevious(fetched, previous);
+    cachedSnapshot = { snapshot, storedAt: Date.now() };
+    await db.insertMarketSnapshot(snapshot);
+    return snapshot;
+  })();
+  try {
+    return await refreshInFlight;
+  } finally {
+    refreshInFlight = null;
   }
-  const snapshot = await fetchCurrentMarketSnapshot();
-  cachedSnapshot = { snapshot, storedAt: Date.now() };
-  await db.insertMarketSnapshot(snapshot);
-  return snapshot;
 }
