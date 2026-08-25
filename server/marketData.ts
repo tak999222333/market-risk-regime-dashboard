@@ -62,11 +62,23 @@ function parseNumeric(value: string | undefined) {
 }
 function formatNumber(value: number) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value); }
 function formatSigned(value: number, suffix = "") { return `${value > 0 ? "+" : ""}${value.toFixed(2)}${suffix}`; }
-function dailyFreshness(date: string): DataFreshness {
-  const parsed = new Date(`${date}T00:00:00Z`).getTime();
-  if (Number.isNaN(parsed)) return "unavailable";
-  const ageInDays = (Date.now() - parsed) / 86_400_000;
-  return ageInDays <= 1.75 ? "fresh" : ageInDays <= 4.75 ? "delayed" : "stale";
+export function dailyFreshness(date: string, now = new Date()): DataFreshness {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!match) return "unavailable";
+
+  const sourceDay = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  const currentDay = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  if (!Number.isFinite(sourceDay) || sourceDay > currentDay) return "fresh";
+
+  let businessDays = 0;
+  for (let day = sourceDay + 86_400_000; day <= currentDay; day += 86_400_000) {
+    const weekday = new Date(day).getUTCDay();
+    if (weekday !== 0 && weekday !== 6) businessDays += 1;
+  }
+
+  // Official daily series often publish after the U.S. close and pause on weekends.
+  // Two business days is normal, three to five is disclosed as delayed, and only older data is stale.
+  return businessDays <= 2 ? "fresh" : businessDays <= 5 ? "delayed" : "stale";
 }
 
 async function fetchFredSeries(seriesId: string): Promise<FredPoint> {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { determineMarketRegime, getMarketScopeMeta, parseStockConnectDailyPayload, scoreCreditSpread, scoreMarketCredit, scoreMarketVix, scoreOfrConfidenceImpact, scorePercentChange, scoreVix, stabilizeSnapshotWithPrevious } from "./marketData";
+import { dailyFreshness, determineMarketRegime, getMarketScopeMeta, parseStockConnectDailyPayload, scoreCreditSpread, scoreMarketCredit, scoreMarketVix, scoreOfrConfidenceImpact, scorePercentChange, scoreVix, stabilizeSnapshotWithPrevious } from "./marketData";
 import type { MarketSnapshot } from "../shared/marketTypes";
 
 describe("market data factor transforms", () => {
@@ -16,6 +16,13 @@ describe("market data factor transforms", () => {
   it("caps extreme observations at the score range", () => {
     expect(scorePercentChange(10)).toBe(100);
     expect(scorePercentChange(-10)).toBe(-100);
+  });
+
+  it("treats normal daily-series publication lag across a weekend as fresh or delayed, not stale", () => {
+    const monday = new Date("2024-06-24T12:00:00Z");
+    expect(dailyFreshness("2024-06-20", monday)).toBe("fresh");
+    expect(dailyFreshness("2024-06-19", monday)).toBe("delayed");
+    expect(dailyFreshness("2024-06-14", monday)).toBe("stale");
   });
 
   it("keeps the last successful factor value when a refresh source times out", () => {
