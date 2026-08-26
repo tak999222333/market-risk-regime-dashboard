@@ -9,12 +9,9 @@ import { aggregateHistoryForChart, HISTORY_RANGE_META, parseHistoryRange, type H
 
 type HomeProps = { market?: MarketScope };
 type MarketOverview = { snapshots: Record<MarketScope, MarketSnapshot>; histories: Record<MarketScope, MarketSnapshot[]>; range: HistoryRange };
-const CLOUDFLARE_MARKET_API = "https://market-regime-pulse.lumahub.workers.dev";
 
 async function getMarketOverview(range: HistoryRange, refresh = false): Promise<MarketOverview> {
-  const isCloudflareHost = typeof window !== "undefined" && window.location.hostname.endsWith("lumahub.workers.dev");
-  const apiOrigin = isCloudflareHost ? "" : CLOUDFLARE_MARKET_API;
-  const response = await fetch(`${apiOrigin}/api/${refresh ? "refresh" : "overview"}?range=${range}`, { method: refresh ? "POST" : "GET" });
+  const response = await fetch(`/api/${refresh ? "refresh" : "overview"}?range=${range}`, { method: refresh ? "POST" : "GET" });
   if (!response.ok) throw new Error(`市場資料請求失敗（${response.status}）`);
   if (!(response.headers.get("content-type") ?? "").includes("application/json")) throw new Error("市場資料服務回傳格式不正確，請稍後重試。");
   return response.json() as Promise<MarketOverview>;

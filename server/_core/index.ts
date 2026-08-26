@@ -9,6 +9,9 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { sdk } from "./sdk";
 import { refreshAllMarketSnapshots } from "../marketData";
+import { getMarketSnapshotsForRange } from "../db";
+import { MARKET_SCOPES } from "../../shared/marketTypes";
+import { parseHistoryRange } from "../../shared/marketHistory";
 import { serveStatic, setupVite } from "./vite";
 
 const CLOUDFLARE_MARKET_API = "https://market-regime-pulse.lumahub.workers.dev";
@@ -51,17 +54,32 @@ async function startServer() {
       return res.status(500).json({ error: message, timestamp: new Date().toISOString() });
     }
   });
+  const localSavedOverview = async (range: ReturnType<typeof parseHistoryRange>, refresh: boolean) => {
+    const histories = Object.fromEntries(await Promise.all(MARKET_SCOPES.map(async (market) => [market, await getMarketSnapshotsForRange(market, range)] as const)));
+    const savedSnapshots = Object.fromEntries(MARKET_SCOPES.flatMap((market) => {
+      const latest = histories[market].at(-1);
+      return latest ? [[market, latest] as const] : [];
+    }));
+    if (Object.keys(savedSnapshots).length === MARKET_SCOPES.length && !refresh) return { snapshots: savedSnapshots, histories, range };
+    const snapshots = await refreshAllMarketSnapshots(refresh);
+    return { snapshots, histories, range };
+  };
   const proxyCloudflareMarketApi = async (req: express.Request, res: express.Response, action: "overview" | "refresh") => {
-    const range = typeof req.query.range === "string" ? req.query.range : "1h";
+    const range = parseHistoryRange(typeof req.query.range === "string" ? req.query.range : null);
     try {
-      const upstream = await fetch(`${CLOUDFLARE_MARKET_API}/api/${action}?range=${encodeURIComponent(range)}`, { method: action === "refresh" ? "POST" : "GET", headers: { Accept: "application/json" } });
+      const upstream = await fetch(`${CLOUDFLARE_MARKET_API}/api/${action}?range=${encodeURIComponent(range)}`, { method: action === "refresh" ? "POST" : "GET", headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) });
       const body = await upstream.text();
       const contentType = upstream.headers.get("content-type") ?? "";
       if (!contentType.includes("application/json")) throw new Error("上游市場服務沒有回傳 JSON");
       res.status(upstream.status).set("Cache-Control", "no-store").type("application/json").send(body);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "市場服務轉接失敗";
-      res.status(502).json({ error: message, timestamp: new Date().toISOString() });
+      try {
+        const fallback = await localSavedOverview(range, action === "refresh");
+        res.set("Cache-Control", "no-store").json(fallback);
+      } catch (fallbackError) {
+        const message = fallbackError instanceof Error ? fallbackError.message : (error instanceof Error ? error.message : "市場服務轉接失敗");
+        res.status(502).json({ error: message, timestamp: new Date().toISOString() });
+      }
     }
   };
   app.get("/api/overview", (req, res) => proxyCloudflareMarketApi(req, res, "overview"));
