@@ -83,7 +83,7 @@ export async function getMarketSnapshotsForRange(market: MarketScope, range: His
   const db = await getDb();
   if (!db) return [];
   const since = historyRangeStart(range);
-  const conditions = since ? and(eq(marketSnapshots.market, market), gte(marketSnapshots.calculatedAt, since)) : eq(marketSnapshots.market, market);
+  const conditions = and(eq(marketSnapshots.market, market), gte(marketSnapshots.calculatedAt, since));
   const rows = await db.select().from(marketSnapshots)
     .where(conditions)
     .orderBy(desc(marketSnapshots.calculatedAt))
