@@ -107,3 +107,11 @@ QQQ 修正後的全球首頁已確認所有資料來源可用；五因子為 QQQ
 Manus 正式入口在未保存新修正前仍載入舊前端，故仍顯示 HTML 當 JSON 解析錯誤。本機同源 Cloudflare 轉接測試等待逾時而被中止；需要改用可直接驗證的入口設定或加上明確逾時處理，避免正式入口長時間懸掛。
 
 Cloudflare 已加入只允許 Manus 正式網域的跨來源 JSON 回應。從 Manus 正式入口執行公開 API 讀取，取得 HTTP 200、`application/json; charset=utf-8` 及回應首字元 `{`；前端現會在非 Cloudflare 網域直接讀取該 JSON，並會先檢查格式，避免 HTML 再被誤解析。
+
+保存並重新載入最新 Manus 正式站版本後，公開頁面仍顯示舊的 `Unexpected token '<'` 錯誤，表示正式網域尚未使用新前端取數資產或請求仍被既有路由覆蓋。下一步要直接檢查該頁載入的 JavaScript 資產及實際請求網址。
+
+資產診斷顯示正式站仍載入 `index-BHFnCHGZ.js`，且該資產不含 `market-regime-pulse.lumahub.workers.dev` 或舊 `/api/overview` 常量，證實它不是本次修正後的前端建置。需等待或觸發正式站資產更新後再驗證。
+
+正式站資產傳播完成後，`https://mriskdash-y5e2kzgw.manus.space` 已成功載入實際市場儀表板，沒有 `Unexpected token '<'`。全球首頁顯示所有資料來源可用、QQQ／VXX／HYG／UUP／IBIT 五因子、52 個 1H 真實觀察、1H／1D 控制項與正確資料口徑，證實新 Cloudflare JSON 讀取已生效。
+
+在已修正的 Manus 正式首頁按下「立即刷新全部」後，按鈕即時顯示「更新三市場中」，完成後恢復「立即刷新全部」。畫面繼續顯示五因子、52 個實際 1H 觀察及 1H／1D 控制項，未再出現 HTML JSON 解析錯誤。Cloudflare 公開入口此前已完成相同資料、時間軸與手動刷新驗證。
