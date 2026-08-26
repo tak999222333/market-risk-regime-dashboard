@@ -1,0 +1,1 @@
+CREATE INDEX `marketSnapshots_market_calculatedAt_idx` ON `marketSnapshots` (`market`,`calculatedAt`);

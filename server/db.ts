@@ -1,7 +1,8 @@
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, gte } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { InsertUser, marketSnapshots, users } from "../drizzle/schema";
 import type { MarketScope, MarketSnapshot } from "../shared/marketTypes";
+import { HISTORY_RANGE_META, historyRangeStart, type HistoryRange } from "../shared/marketHistory";
 import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -68,6 +69,25 @@ export async function getRecentMarketSnapshots(market: MarketScope, limit = 72):
     .where(eq(marketSnapshots.market, market))
     .orderBy(desc(marketSnapshots.calculatedAt))
     .limit(limit);
+  return rows.flatMap((row) => {
+    try {
+      const snapshot = JSON.parse(row.payload) as Partial<MarketSnapshot>;
+      return [{ ...snapshot, market: snapshot.market ?? row.market } as MarketSnapshot];
+    } catch {
+      return [];
+    }
+  }).reverse();
+}
+
+export async function getMarketSnapshotsForRange(market: MarketScope, range: HistoryRange): Promise<MarketSnapshot[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const since = historyRangeStart(range);
+  const conditions = since ? and(eq(marketSnapshots.market, market), gte(marketSnapshots.calculatedAt, since)) : eq(marketSnapshots.market, market);
+  const rows = await db.select().from(marketSnapshots)
+    .where(conditions)
+    .orderBy(desc(marketSnapshots.calculatedAt))
+    .limit(HISTORY_RANGE_META[range].limit);
   return rows.flatMap((row) => {
     try {
       const snapshot = JSON.parse(row.payload) as Partial<MarketSnapshot>;
