@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { aggregateHistoryForChart, historyRangeStart, parseHistoryRange } from "../shared/marketHistory";
+import { aggregateHistoryForChart, parseHistoryInterval } from "../shared/marketHistory";
 import type { MarketSnapshot } from "../shared/marketTypes";
 
 function snapshot(at: string, score: number): MarketSnapshot {
@@ -11,24 +11,29 @@ describe("market history aggregation", () => {
     const points = aggregateHistoryForChart([
       snapshot("2024-06-24T10:01:00Z", 10),
       snapshot("2024-06-24T10:08:00Z", 14),
-      snapshot("2024-06-24T10:21:00Z", 8),
-    ], "1d");
+      snapshot("2024-06-24T11:21:00Z", 8),
+    ], "hour");
     expect(points).toHaveLength(2);
     expect(points[0]).toMatchObject({ compositeScore: 14, samples: 2 });
     expect(points[1]).toMatchObject({ compositeScore: 8, samples: 1 });
   });
 
-  it("calculates requested history starts from the selected window", () => {
-    const now = new Date("2024-06-24T12:00:00Z");
-    expect(historyRangeStart("1h", now).toISOString()).toBe("2024-06-24T11:00:00.000Z");
-    expect(historyRangeStart("1d", now).toISOString()).toBe("2024-06-23T12:00:00.000Z");
+  it("keeps the last actual observation in every daily bucket", () => {
+    const points = aggregateHistoryForChart([
+      snapshot("2024-06-23T23:58:00Z", 4),
+      snapshot("2024-06-24T10:01:00Z", 10),
+      snapshot("2024-06-24T15:30:00Z", 18),
+    ], "day");
+    expect(points).toHaveLength(2);
+    expect(points[0]).toMatchObject({ compositeScore: 4, samples: 1 });
+    expect(points[1]).toMatchObject({ compositeScore: 18, samples: 2 });
   });
 
-  it("accepts only 1H and 1D from the URL and falls back safely for removed or invalid values", () => {
-    expect(parseHistoryRange("1h")).toBe("1h");
-    expect(parseHistoryRange("1d")).toBe("1d");
-    expect(parseHistoryRange("1w")).toBe("1h");
-    expect(parseHistoryRange("all")).toBe("1h");
-    expect(parseHistoryRange("year")).toBe("1h");
+  it("accepts hourly and daily intervals and keeps legacy links safe", () => {
+    expect(parseHistoryInterval("hour")).toBe("hour");
+    expect(parseHistoryInterval("day")).toBe("day");
+    expect(parseHistoryInterval("1h")).toBe("hour");
+    expect(parseHistoryInterval("1d")).toBe("day");
+    expect(parseHistoryInterval("week")).toBe("hour");
   });
 });

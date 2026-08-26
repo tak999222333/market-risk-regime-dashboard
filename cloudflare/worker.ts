@@ -2,7 +2,7 @@ import { calculateCompositeScore, calculateConfidence, determineRegime } from ".
 import { MARKET_SCOPES, MARKET_SCOPE_META, type DataFreshness, type LiveMarketFactor, type MarketFactorKey, type MarketScope, type MarketSnapshot, type SupplementalSignal } from "../shared/marketTypes";
 import { STATIC_ASSETS } from "./generated-assets";
 
-type HistoryRange = "1h" | "1d";
+type HistoryInterval = "hour" | "day";
 type FredPoint = { date: string; value: number; previous: number | null };
 type NasdaqQuote = { last: number; changePercent: number; updatedAt: string };
 type BitcoinQuote = { price: number; changePercent: number; updatedAt: string };
@@ -15,9 +15,9 @@ interface D1Database { prepare(query: string): D1Statement; }
 interface Env { DB: D1Database; }
 
 const FRED_SERIES = { vix: "VIXCLS", highYieldSpread: "BAMLH0A0HYM2", dollarIndex: "DTWEXBGS", yuanPerUsd: "DEXCHUS" } as const;
-const RANGE_META: Record<HistoryRange, { bucketMs: number; windowMs: number; limit: number }> = {
-  "1h": { bucketMs: 60_000, windowMs: 60 * 60_000, limit: 120 },
-  "1d": { bucketMs: 15 * 60_000, windowMs: 24 * 60 * 60_000, limit: 1_600 },
+const INTERVAL_META: Record<HistoryInterval, { bucketMs: number; maxRawRows: number }> = {
+  hour: { bucketMs: 60 * 60_000, maxRawRows: 50_000 },
+  day: { bucketMs: 24 * 60 * 60_000, maxRawRows: 50_000 },
 };
 const MARKET_CONFIG: Record<MarketScope, { weights: Record<MarketFactorKey, number>; equity: { symbol: string; name: string; label: string; sourceUrl: string; sensitivity: number }; cross: { symbol?: string; name: string; label: string; sourceUrl: string; sensitivity: number } }> = {
   global: { weights: { equity: 0.25, volatility: 0.2, credit: 0.25, safeHaven: 0.15, crossAsset: 0.15 }, equity: { symbol: "ndx", name: "股票風險偏好", label: "NDX", sourceUrl: "https://www.nasdaq.com/market-activity/index/ndx", sensitivity: 55 }, cross: { name: "跨資產確認", label: "BTC", sourceUrl: "https://www.coingecko.com/en/coins/bitcoin", sensitivity: 12 } },
@@ -47,7 +47,7 @@ function scoreCredit(scope: MarketScope, spread: number) { return clampScore((MA
 function formatNumber(value: number) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value); }
 function formatSigned(value: number, suffix = "") { return `${value > 0 ? "+" : ""}${value.toFixed(2)}${suffix}`; }
 function parseNumeric(value: string | undefined) { return value ? Number(value.replace(/[^0-9+\-.]/g, "").replace("+", "")) : Number.NaN; }
-function parseRange(value: string | null): HistoryRange { return value === "1d" ? "1d" : "1h"; }
+function parseInterval(value: string | null): HistoryInterval { return value === "day" || value === "1d" ? "day" : "hour"; }
 function determineMarketRegime(scope: MarketScope, score: number): MarketSnapshot["regime"] {
   if (scope === "global") return determineRegime(score);
   const { riskOn, riskOff } = MARKET_THRESHOLDS[scope];
@@ -263,17 +263,17 @@ async function refreshMarket(env: Env, scope: MarketScope, force = false): Promi
   refreshInFlight.set(scope, task); try { return await task; } finally { refreshInFlight.delete(scope); }
 }
 async function refreshAll(env: Env, force = false) { return Object.fromEntries(await Promise.all(MARKET_SCOPES.map(async (scope) => [scope, await refreshMarket(env, scope, force)] as const))) as Record<MarketScope, MarketSnapshot>; }
-async function historyForRange(env: Env, scope: MarketScope, range: HistoryRange) {
-  const meta = RANGE_META[range], since = new Date(Date.now() - meta.windowMs).toISOString(); const result = await env.DB.prepare("SELECT payload FROM market_snapshots WHERE market = ? AND calculated_at >= ? ORDER BY calculated_at ASC LIMIT ?").bind(scope, since, meta.limit).all<SnapshotRow>();
+async function historyForInterval(env: Env, scope: MarketScope, interval: HistoryInterval) {
+  const meta = INTERVAL_META[interval]; const result = await env.DB.prepare("SELECT payload FROM market_snapshots WHERE market = ? ORDER BY calculated_at DESC LIMIT ?").bind(scope, meta.maxRawRows).all<SnapshotRow>();
   const buckets = new Map<number, { snapshot: MarketSnapshot; samples: number }>();
   for (const row of result.results) { try { const snapshot = JSON.parse(row.payload) as MarketSnapshot; const timestamp = new Date(snapshot.calculatedAt).getTime(), key = Math.floor(timestamp / meta.bucketMs) * meta.bucketMs, current = buckets.get(key); if (!current || new Date(current.snapshot.calculatedAt).getTime() <= timestamp) buckets.set(key, { snapshot, samples: (current?.samples ?? 0) + 1 }); else current.samples += 1; } catch { /* skip malformed legacy row */ } }
   return Array.from(buckets.values()).sort((a, b) => new Date(a.snapshot.calculatedAt).getTime() - new Date(b.snapshot.calculatedAt).getTime()).map(({ snapshot }) => snapshot);
 }
 async function api(request: Request, env: Env) {
-  const url = new URL(request.url), range = parseRange(url.searchParams.get("range"));
+  const url = new URL(request.url), interval = parseInterval(url.searchParams.get("interval") ?? url.searchParams.get("range"));
   if (url.pathname === "/api/health") return json({ ok: true, service: "market-regime-pulse", timestamp: new Date().toISOString() });
-  if (url.pathname === "/api/overview" && request.method === "GET") { const snapshots = await refreshAll(env); const histories = Object.fromEntries(await Promise.all(MARKET_SCOPES.map(async (scope) => [scope, await historyForRange(env, scope, range)] as const))) as Record<MarketScope, MarketSnapshot[]>; return json({ snapshots, histories, range }); }
-  if (url.pathname === "/api/refresh" && request.method === "POST") { const snapshots = await refreshAll(env, true); const histories = Object.fromEntries(await Promise.all(MARKET_SCOPES.map(async (scope) => [scope, await historyForRange(env, scope, range)] as const))) as Record<MarketScope, MarketSnapshot[]>; return json({ snapshots, histories, range }); }
+  if (url.pathname === "/api/overview" && request.method === "GET") { const snapshots = await refreshAll(env); const histories = Object.fromEntries(await Promise.all(MARKET_SCOPES.map(async (scope) => [scope, await historyForInterval(env, scope, interval)] as const))) as Record<MarketScope, MarketSnapshot[]>; return json({ snapshots, histories, interval }); }
+  if (url.pathname === "/api/refresh" && request.method === "POST") { const snapshots = await refreshAll(env, true); const histories = Object.fromEntries(await Promise.all(MARKET_SCOPES.map(async (scope) => [scope, await historyForInterval(env, scope, interval)] as const))) as Record<MarketScope, MarketSnapshot[]>; return json({ snapshots, histories, interval }); }
   return json({ error: "Not found" }, 404);
 }
 

@@ -3,13 +3,13 @@ import { z } from "zod";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router } from "./_core/trpc";
-import { getMarketSnapshotsForRange, getRecentMarketSnapshots } from "./db";
+import { getMarketSnapshotsForInterval, getRecentMarketSnapshots } from "./db";
 import { refreshAllMarketSnapshots, refreshAndStoreMarketSnapshot } from "./marketData";
 import { MARKET_SCOPES } from "../shared/marketTypes";
-import { HISTORY_RANGES } from "../shared/marketHistory";
+import { HISTORY_INTERVALS } from "../shared/marketHistory";
 
 const marketInput = z.object({ market: z.enum(MARKET_SCOPES) });
-const historyInput = z.object({ range: z.enum(HISTORY_RANGES).default("1h") });
+const historyInput = z.object({ interval: z.enum(HISTORY_INTERVALS).default("hour") });
 
 export const appRouter = router({
   system: systemRouter,
@@ -23,10 +23,10 @@ export const appRouter = router({
   }),
   marketRegime: router({
     overview: publicProcedure.input(historyInput.optional()).query(async ({ input }) => {
-      const range = input?.range ?? "1h";
+      const interval = input?.interval ?? "hour";
       const snapshots = await refreshAllMarketSnapshots();
-      const histories = Object.fromEntries(await Promise.all(MARKET_SCOPES.map(async (market) => [market, await getMarketSnapshotsForRange(market, range)] as const)));
-      return { snapshots, histories, range };
+      const histories = Object.fromEntries(await Promise.all(MARKET_SCOPES.map(async (market) => [market, await getMarketSnapshotsForInterval(market, interval)] as const)));
+      return { snapshots, histories, interval };
     }),
     current: publicProcedure.input(marketInput).query(async ({ input }) => {
       const snapshot = await refreshAndStoreMarketSnapshot(input.market);
@@ -34,10 +34,10 @@ export const appRouter = router({
       return { snapshot, history };
     }),
     refresh: publicProcedure.input(historyInput.optional()).mutation(async ({ input }) => {
-      const range = input?.range ?? "1h";
+      const interval = input?.interval ?? "hour";
       const snapshots = await refreshAllMarketSnapshots(true);
-      const histories = Object.fromEntries(await Promise.all(MARKET_SCOPES.map(async (market) => [market, await getMarketSnapshotsForRange(market, range)] as const)));
-      return { snapshots, histories, range };
+      const histories = Object.fromEntries(await Promise.all(MARKET_SCOPES.map(async (market) => [market, await getMarketSnapshotsForInterval(market, interval)] as const)));
+      return { snapshots, histories, interval };
     }),
   }),
 });

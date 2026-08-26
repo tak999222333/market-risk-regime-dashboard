@@ -9,9 +9,9 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { sdk } from "./sdk";
 import { refreshAllMarketSnapshots } from "../marketData";
-import { getMarketSnapshotsForRange } from "../db";
+import { getMarketSnapshotsForInterval } from "../db";
 import { MARKET_SCOPES } from "../../shared/marketTypes";
-import { parseHistoryRange } from "../../shared/marketHistory";
+import { parseHistoryInterval, type HistoryInterval } from "../../shared/marketHistory";
 import { serveStatic, setupVite } from "./vite";
 
 const CLOUDFLARE_MARKET_API = "https://market-regime-pulse.lumahub.workers.dev";
@@ -54,25 +54,25 @@ async function startServer() {
       return res.status(500).json({ error: message, timestamp: new Date().toISOString() });
     }
   });
-  const localSavedOverview = async (range: ReturnType<typeof parseHistoryRange>, refresh: boolean) => {
-    const histories = Object.fromEntries(await Promise.all(MARKET_SCOPES.map(async (market) => [market, await getMarketSnapshotsForRange(market, range)] as const)));
+  const localSavedOverview = async (interval: HistoryInterval, refresh: boolean) => {
+    const histories = Object.fromEntries(await Promise.all(MARKET_SCOPES.map(async (market) => [market, await getMarketSnapshotsForInterval(market, interval)] as const)));
     const savedSnapshots = Object.fromEntries(MARKET_SCOPES.flatMap((market) => {
       const latest = histories[market].at(-1);
       return latest ? [[market, latest] as const] : [];
     }));
-    if (Object.keys(savedSnapshots).length === MARKET_SCOPES.length) return { snapshots: savedSnapshots, histories, range };
+    if (Object.keys(savedSnapshots).length === MARKET_SCOPES.length) return { snapshots: savedSnapshots, histories, interval };
     const snapshots = await Promise.race([
       refreshAllMarketSnapshots(refresh),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error("本機市場資料刷新逾時")), 8_000)),
     ]);
-    return { snapshots, histories, range };
+    return { snapshots, histories, interval };
   };
   const proxyCloudflareMarketApi = async (req: express.Request, res: express.Response, action: "overview" | "refresh") => {
-    const range = parseHistoryRange(typeof req.query.range === "string" ? req.query.range : null);
+    const interval = parseHistoryInterval(typeof req.query.interval === "string" ? req.query.interval : typeof req.query.range === "string" ? req.query.range : null);
     if (action === "refresh") {
-      void fetch(`${CLOUDFLARE_MARKET_API}/api/refresh?range=${encodeURIComponent(range)}`, { method: "POST", headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) }).catch(() => undefined);
+      void fetch(`${CLOUDFLARE_MARKET_API}/api/refresh?interval=${encodeURIComponent(interval)}`, { method: "POST", headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) }).catch(() => undefined);
       try {
-        const fallback = await localSavedOverview(range, false);
+        const fallback = await localSavedOverview(interval, false);
         return res.set("Cache-Control", "no-store").json(fallback);
       } catch (error) {
         const message = error instanceof Error ? error.message : "市場資料刷新暫時不可用";
@@ -80,14 +80,14 @@ async function startServer() {
       }
     }
     try {
-      const upstream = await fetch(`${CLOUDFLARE_MARKET_API}/api/${action}?range=${encodeURIComponent(range)}`, { method: "GET", headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) });
+      const upstream = await fetch(`${CLOUDFLARE_MARKET_API}/api/${action}?interval=${encodeURIComponent(interval)}`, { method: "GET", headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) });
       const body = await upstream.text();
       const contentType = upstream.headers.get("content-type") ?? "";
       if (!contentType.includes("application/json")) throw new Error("上游市場服務沒有回傳 JSON");
       res.status(upstream.status).set("Cache-Control", "no-store").type("application/json").send(body);
     } catch (error) {
       try {
-        const fallback = await localSavedOverview(range, false);
+        const fallback = await localSavedOverview(interval, false);
         res.set("Cache-Control", "no-store").json(fallback);
       } catch (fallbackError) {
         const message = fallbackError instanceof Error ? fallbackError.message : (error instanceof Error ? error.message : "市場服務轉接失敗");

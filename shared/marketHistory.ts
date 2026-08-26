@@ -1,15 +1,16 @@
 import type { MarketSnapshot } from "./marketTypes";
 
-export const HISTORY_RANGES = ["1h", "1d"] as const;
-export type HistoryRange = (typeof HISTORY_RANGES)[number];
+export const HISTORY_INTERVALS = ["hour", "day"] as const;
+export type HistoryInterval = (typeof HISTORY_INTERVALS)[number];
 
-export function parseHistoryRange(value: string | null | undefined): HistoryRange {
-  return (HISTORY_RANGES as readonly string[]).includes(value ?? "") ? value as HistoryRange : "1h";
+export function parseHistoryInterval(value: string | null | undefined): HistoryInterval {
+  if (value === "day" || value === "1d") return "day";
+  return "hour";
 }
 
-export const HISTORY_RANGE_META: Record<HistoryRange, { label: string; description: string; bucketMs: number; limit: number }> = {
-  "1h": { label: "1 小時", description: "保留短線的分鐘級節奏", bucketMs: 60_000, limit: 90 },
-  "1d": { label: "1 日", description: "每 15 分鐘保留一個實際觀察", bucketMs: 15 * 60_000, limit: 1_600 },
+export const HISTORY_INTERVAL_META: Record<HistoryInterval, { label: string; description: string; bucketMs: number; maxRawRows: number }> = {
+  hour: { label: "每小時", description: "每個小時保留最後一個實際分數", bucketMs: 60 * 60_000, maxRawRows: 50_000 },
+  day: { label: "每日", description: "每天保留最後一個實際分數", bucketMs: 24 * 60 * 60_000, maxRawRows: 50_000 },
 };
 
 export type HistoryChartPoint = {
@@ -19,16 +20,8 @@ export type HistoryChartPoint = {
   samples: number;
 };
 
-export function historyRangeStart(range: HistoryRange, now = new Date()): Date {
-  const windows: Record<HistoryRange, number> = {
-    "1h": 60 * 60_000,
-    "1d": 24 * 60 * 60_000,
-  };
-  return new Date(now.getTime() - windows[range]);
-}
-
-export function aggregateHistoryForChart(snapshots: MarketSnapshot[], range: HistoryRange): HistoryChartPoint[] {
-  const bucketMs = HISTORY_RANGE_META[range].bucketMs;
+export function aggregateHistoryForChart(snapshots: MarketSnapshot[], interval: HistoryInterval): HistoryChartPoint[] {
+  const bucketMs = HISTORY_INTERVAL_META[interval].bucketMs;
   const buckets = new Map<number, { snapshot: MarketSnapshot; samples: number }>();
 
   for (const snapshot of snapshots) {
