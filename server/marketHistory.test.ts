@@ -20,11 +20,11 @@ describe("market history aggregation", () => {
 
   it("calculates requested history starts from the selected window", () => {
     const now = new Date("2024-06-24T12:00:00Z");
-    expect(historyRangeStart("1h", now)?.toISOString()).toBe("2024-06-24T11:00:00.000Z");
-    expect(historyRangeStart("1d", now)?.toISOString()).toBe("2024-06-23T12:00:00.000Z");
+    expect(historyRangeStart("1h", now).toISOString()).toBe("2024-06-24T11:00:00.000Z");
+    expect(historyRangeStart("1d", now).toISOString()).toBe("2024-06-23T12:00:00.000Z");
   });
 
-  it("accepts every chart range from the URL and falls back safely for invalid values", () => {
+  it("accepts only 1H and 1D from the URL and falls back safely for removed or invalid values", () => {
     expect(parseHistoryRange("1h")).toBe("1h");
     expect(parseHistoryRange("1d")).toBe("1d");
     expect(parseHistoryRange("1w")).toBe("1h");

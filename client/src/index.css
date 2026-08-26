@@ -151,6 +151,16 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* 走勢篩選按使用者要求只保留 1H 與 1D；舊版本的額外標籤不能被選取。 */
+[role="tablist"]:has([id$="-trigger-1w"]) {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+}
+
+[role="tablist"] [id$="-trigger-1w"],
+[role="tablist"] [id$="-trigger-all"] {
+  display: none;
+}
+
 @layer components {
   /**
    * Custom container utility that centers content and adds responsive padding.

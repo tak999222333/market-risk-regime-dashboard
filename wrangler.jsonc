@@ -1,0 +1,11 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "market-regime-pulse",
+  "main": "cloudflare/worker.ts",
+  "compatibility_date": "2026-08-26",
+  "workers_dev": true,
+  "d1_databases": [
+    { "binding": "DB", "database_name": "market-regime-pulse", "database_id": "e47ed68a-ea2d-45ed-af9b-413d920a8707" }
+  ],
+  "triggers": { "crons": ["* * * * *"] }
+}
