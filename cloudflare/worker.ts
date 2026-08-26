@@ -277,13 +277,26 @@ async function api(request: Request, env: Env) {
   return json({ error: "Not found" }, 404);
 }
 
+function withAllowedCors(request: Request, response: Response): Response {
+  const origin = request.headers.get("Origin");
+  const allowedOrigins = new Set(["https://mriskdash-y5e2kzgw.manus.space", "https://market-regime-pulse.lumahub.workers.dev"]);
+  if (!origin || !allowedOrigins.has(origin)) return response;
+  const headers = new Headers(response.headers);
+  headers.set("Access-Control-Allow-Origin", origin);
+  headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  headers.set("Access-Control-Allow-Headers", "Content-Type");
+  headers.set("Vary", "Origin");
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     try {
-      if (url.pathname.startsWith("/api/")) return await api(request, env);
+      if (url.pathname.startsWith("/api/") && request.method === "OPTIONS") return withAllowedCors(request, new Response(null, { status: 204 }));
+      if (url.pathname.startsWith("/api/")) return withAllowedCors(request, await api(request, env));
       return staticResponse(url.pathname);
-    } catch (error) { return json({ error: error instanceof Error ? error.message : "Unexpected service error" }, 502); }
+    } catch (error) { return withAllowedCors(request, json({ error: error instanceof Error ? error.message : "Unexpected service error" }, 502)); }
   },
   async scheduled(_controller: unknown, env: Env, ctx: { waitUntil(promise: Promise<unknown>): void }) { ctx.waitUntil(refreshAll(env, true)); },
 };

@@ -11,6 +11,8 @@ import { sdk } from "./sdk";
 import { refreshAllMarketSnapshots } from "../marketData";
 import { serveStatic, setupVite } from "./vite";
 
+const CLOUDFLARE_MARKET_API = "https://market-regime-pulse.lumahub.workers.dev";
+
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
     const server = net.createServer();
@@ -49,6 +51,21 @@ async function startServer() {
       return res.status(500).json({ error: message, timestamp: new Date().toISOString() });
     }
   });
+  const proxyCloudflareMarketApi = async (req: express.Request, res: express.Response, action: "overview" | "refresh") => {
+    const range = typeof req.query.range === "string" ? req.query.range : "1h";
+    try {
+      const upstream = await fetch(`${CLOUDFLARE_MARKET_API}/api/${action}?range=${encodeURIComponent(range)}`, { method: action === "refresh" ? "POST" : "GET", headers: { Accept: "application/json" } });
+      const body = await upstream.text();
+      const contentType = upstream.headers.get("content-type") ?? "";
+      if (!contentType.includes("application/json")) throw new Error("上游市場服務沒有回傳 JSON");
+      res.status(upstream.status).set("Cache-Control", "no-store").type("application/json").send(body);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "市場服務轉接失敗";
+      res.status(502).json({ error: message, timestamp: new Date().toISOString() });
+    }
+  };
+  app.get("/api/overview", (req, res) => proxyCloudflareMarketApi(req, res, "overview"));
+  app.post("/api/refresh", (req, res) => proxyCloudflareMarketApi(req, res, "refresh"));
   // tRPC API
   app.use(
     "/api/trpc",
