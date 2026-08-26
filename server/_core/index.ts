@@ -60,8 +60,11 @@ async function startServer() {
       const latest = histories[market].at(-1);
       return latest ? [[market, latest] as const] : [];
     }));
-    if (Object.keys(savedSnapshots).length === MARKET_SCOPES.length && !refresh) return { snapshots: savedSnapshots, histories, range };
-    const snapshots = await refreshAllMarketSnapshots(refresh);
+    if (Object.keys(savedSnapshots).length === MARKET_SCOPES.length) return { snapshots: savedSnapshots, histories, range };
+    const snapshots = await Promise.race([
+      refreshAllMarketSnapshots(refresh),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("本機市場資料刷新逾時")), 8_000)),
+    ]);
     return { snapshots, histories, range };
   };
   const proxyCloudflareMarketApi = async (req: express.Request, res: express.Response, action: "overview" | "refresh") => {

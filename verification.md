@@ -115,3 +115,11 @@ Cloudflare 已加入只允許 Manus 正式網域的跨來源 JSON 回應。從 M
 正式站資產傳播完成後，`https://mriskdash-y5e2kzgw.manus.space` 已成功載入實際市場儀表板，沒有 `Unexpected token '<'`。全球首頁顯示所有資料來源可用、QQQ／VXX／HYG／UUP／IBIT 五因子、52 個 1H 真實觀察、1H／1D 控制項與正確資料口徑，證實新 Cloudflare JSON 讀取已生效。
 
 在已修正的 Manus 正式首頁按下「立即刷新全部」後，按鈕即時顯示「更新三市場中」，完成後恢復「立即刷新全部」。畫面繼續顯示五因子、52 個實際 1H 觀察及 1H／1D 控制項，未再出現 HTML JSON 解析錯誤。Cloudflare 公開入口此前已完成相同資料、時間軸與手動刷新驗證。
+
+同源版本發佈後，Manus 正式網址在約 8 秒後仍停留在資料骨架而沒有顯示錯誤，表示 `/api/overview` 請求仍未完成；需直接診斷正式 API 的回應時間與備援流程。
+
+直接由正式頁面呼叫同源 `/api/overview?range=1h` 已取得 HTTP 200、`application/json; charset=utf-8` 及 JSON 內容；因此服務端已可取數，現正處理已載入頁面初始查詢未解除骨架的用戶端狀態。
+
+資產檢查顯示正式頁目前載入 `index-aXZXBQGj.js`，其中仍含 Cloudflare URL；這是前一版跨來源前端，而非剛發布的同源取數版本，故仍可能出現 `Failed to fetch`。需待新資產傳播後再作正式驗證。
+
+同源版本資產傳播後，正式網址已成功由骨架進入完整儀表板，沒有 `Failed to fetch`。全球頁顯示所有資料來源可用、五個 QQQ／VXX／HYG／UUP／IBIT 因子、50 個 1H 實際觀察、1H／1D 控制項、分數 -10 及 11:30 ET 快照時間。
