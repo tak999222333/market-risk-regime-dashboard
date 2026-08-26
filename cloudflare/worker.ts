@@ -2,7 +2,7 @@ import { calculateCompositeScore, calculateConfidence, determineRegime } from ".
 import { MARKET_SCOPES, MARKET_SCOPE_META, type DataFreshness, type LiveMarketFactor, type MarketFactorKey, type MarketScope, type MarketSnapshot, type SupplementalSignal } from "../shared/marketTypes";
 import { STATIC_ASSETS } from "./generated-assets";
 
-type HistoryInterval = "hour" | "day";
+type HistoryInterval = "minute" | "hour" | "day";
 type FredPoint = { date: string; value: number; previous: number | null };
 type NasdaqQuote = { last: number; changePercent: number; updatedAt: string };
 type BitcoinQuote = { price: number; changePercent: number; updatedAt: string };
@@ -16,6 +16,7 @@ interface Env { DB: D1Database; }
 
 const FRED_SERIES = { vix: "VIXCLS", highYieldSpread: "BAMLH0A0HYM2", dollarIndex: "DTWEXBGS", yuanPerUsd: "DEXCHUS" } as const;
 const INTERVAL_META: Record<HistoryInterval, { bucketMs: number; maxRawRows: number }> = {
+  minute: { bucketMs: 60_000, maxRawRows: 50_000 },
   hour: { bucketMs: 60 * 60_000, maxRawRows: 50_000 },
   day: { bucketMs: 24 * 60 * 60_000, maxRawRows: 50_000 },
 };
@@ -47,7 +48,7 @@ function scoreCredit(scope: MarketScope, spread: number) { return clampScore((MA
 function formatNumber(value: number) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value); }
 function formatSigned(value: number, suffix = "") { return `${value > 0 ? "+" : ""}${value.toFixed(2)}${suffix}`; }
 function parseNumeric(value: string | undefined) { return value ? Number(value.replace(/[^0-9+\-.]/g, "").replace("+", "")) : Number.NaN; }
-function parseInterval(value: string | null): HistoryInterval { return value === "day" || value === "1d" ? "day" : "hour"; }
+function parseInterval(value: string | null): HistoryInterval { return value === "minute" || value === "1m" ? "minute" : value === "day" || value === "1d" ? "day" : "hour"; }
 function determineMarketRegime(scope: MarketScope, score: number): MarketSnapshot["regime"] {
   if (scope === "global") return determineRegime(score);
   const { riskOn, riskOff } = MARKET_THRESHOLDS[scope];

@@ -7,6 +7,17 @@ function snapshot(at: string, score: number): MarketSnapshot {
 }
 
 describe("market history aggregation", () => {
+  it("keeps the final actual observation in every minute bucket", () => {
+    const points = aggregateHistoryForChart([
+      snapshot("2024-06-24T10:01:02Z", 10),
+      snapshot("2024-06-24T10:01:48Z", 14),
+      snapshot("2024-06-24T10:02:05Z", 8),
+    ], "minute");
+    expect(points).toHaveLength(2);
+    expect(points[0]).toMatchObject({ compositeScore: 14, samples: 2 });
+    expect(points[1]).toMatchObject({ compositeScore: 8, samples: 1 });
+  });
+
   it("keeps the final actual observation in every chart bucket", () => {
     const points = aggregateHistoryForChart([
       snapshot("2024-06-24T10:01:00Z", 10),
@@ -29,9 +40,11 @@ describe("market history aggregation", () => {
     expect(points[1]).toMatchObject({ compositeScore: 18, samples: 2 });
   });
 
-  it("accepts hourly and daily intervals and keeps legacy links safe", () => {
+  it("accepts minute, hourly and daily intervals and keeps legacy links safe", () => {
+    expect(parseHistoryInterval("minute")).toBe("minute");
     expect(parseHistoryInterval("hour")).toBe("hour");
     expect(parseHistoryInterval("day")).toBe("day");
+    expect(parseHistoryInterval("1m")).toBe("minute");
     expect(parseHistoryInterval("1h")).toBe("hour");
     expect(parseHistoryInterval("1d")).toBe("day");
     expect(parseHistoryInterval("week")).toBe("hour");

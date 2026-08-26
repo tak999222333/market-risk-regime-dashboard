@@ -1,14 +1,16 @@
 import type { MarketSnapshot } from "./marketTypes";
 
-export const HISTORY_INTERVALS = ["hour", "day"] as const;
+export const HISTORY_INTERVALS = ["minute", "hour", "day"] as const;
 export type HistoryInterval = (typeof HISTORY_INTERVALS)[number];
 
 export function parseHistoryInterval(value: string | null | undefined): HistoryInterval {
+  if (value === "minute" || value === "1m") return "minute";
   if (value === "day" || value === "1d") return "day";
   return "hour";
 }
 
 export const HISTORY_INTERVAL_META: Record<HistoryInterval, { label: string; description: string; bucketMs: number; maxRawRows: number }> = {
+  minute: { label: "每分鐘", description: "每分鐘保留最後一個實際分數", bucketMs: 60_000, maxRawRows: 50_000 },
   hour: { label: "每小時", description: "每個小時保留最後一個實際分數", bucketMs: 60 * 60_000, maxRawRows: 50_000 },
   day: { label: "每日", description: "每天保留最後一個實際分數", bucketMs: 24 * 60 * 60_000, maxRawRows: 50_000 },
 };
