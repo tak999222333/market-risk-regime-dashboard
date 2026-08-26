@@ -69,15 +69,25 @@ async function startServer() {
   };
   const proxyCloudflareMarketApi = async (req: express.Request, res: express.Response, action: "overview" | "refresh") => {
     const range = parseHistoryRange(typeof req.query.range === "string" ? req.query.range : null);
+    if (action === "refresh") {
+      void fetch(`${CLOUDFLARE_MARKET_API}/api/refresh?range=${encodeURIComponent(range)}`, { method: "POST", headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) }).catch(() => undefined);
+      try {
+        const fallback = await localSavedOverview(range, false);
+        return res.set("Cache-Control", "no-store").json(fallback);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "市場資料刷新暫時不可用";
+        return res.status(502).json({ error: message, timestamp: new Date().toISOString() });
+      }
+    }
     try {
-      const upstream = await fetch(`${CLOUDFLARE_MARKET_API}/api/${action}?range=${encodeURIComponent(range)}`, { method: action === "refresh" ? "POST" : "GET", headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) });
+      const upstream = await fetch(`${CLOUDFLARE_MARKET_API}/api/${action}?range=${encodeURIComponent(range)}`, { method: "GET", headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) });
       const body = await upstream.text();
       const contentType = upstream.headers.get("content-type") ?? "";
       if (!contentType.includes("application/json")) throw new Error("上游市場服務沒有回傳 JSON");
       res.status(upstream.status).set("Cache-Control", "no-store").type("application/json").send(body);
     } catch (error) {
       try {
-        const fallback = await localSavedOverview(range, action === "refresh");
+        const fallback = await localSavedOverview(range, false);
         res.set("Cache-Control", "no-store").json(fallback);
       } catch (fallbackError) {
         const message = fallbackError instanceof Error ? fallbackError.message : (error instanceof Error ? error.message : "市場服務轉接失敗");
