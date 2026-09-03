@@ -255,8 +255,28 @@ async function fetchReliableWorkerSnapshot(scope: MarketScope): Promise<MarketSn
 }
 
 type SnapshotRow = { payload: string };
+// 輕量 row：只拉 chart 需要嘅欄位，唔拉 payload TEXT（100KB+）。
+type LightSnapshotRow = { composite_score: number; regime: string; confidence: number; data_status: string; calculated_at: string };
 async function latestSnapshot(env: Env, scope: MarketScope) { const row = await env.DB.prepare("SELECT payload FROM market_snapshots WHERE market = ? ORDER BY calculated_at DESC LIMIT 1").bind(scope).first<SnapshotRow>(); try { return row ? JSON.parse(row.payload) as MarketSnapshot : undefined; } catch { return undefined; } }
 async function storeSnapshot(env: Env, snapshot: MarketSnapshot) { await env.DB.prepare("INSERT INTO market_snapshots (market, composite_score, regime, confidence, data_status, payload, calculated_at) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(snapshot.market, snapshot.compositeScore, snapshot.regime, snapshot.confidence, snapshot.dataStatus, JSON.stringify(snapshot), snapshot.calculatedAt).run(); }
+
+// 只保留最近 N 日資料，減低 D1 rows_read。回傳統計資訊（清理前後行數同刪咗幾多）。
+const RETENTION_DAYS = 5;
+async function cleanupOldSnapshots(env: Env, retentionDays = RETENTION_DAYS) {
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60_000).toISOString();
+  const beforeRow = await env.DB.prepare("SELECT COUNT(*) AS total FROM market_snapshots").first<{ total: number }>();
+  const toDeleteRow = await env.DB.prepare("SELECT COUNT(*) AS n FROM market_snapshots WHERE calculated_at < ?").bind(cutoff).first<{ n: number }>();
+  await env.DB.prepare("DELETE FROM market_snapshots WHERE calculated_at < ?").bind(cutoff).run();
+  const afterRow = await env.DB.prepare("SELECT COUNT(*) AS total FROM market_snapshots").first<{ total: number }>();
+  return {
+    retentionDays,
+    cutoff,
+    before: beforeRow?.total ?? 0,
+    after: afterRow?.total ?? 0,
+    deleted: toDeleteRow?.n ?? 0,
+    ranAt: new Date().toISOString(),
+  };
+}
 async function refreshMarket(env: Env, scope: MarketScope, force = false): Promise<MarketSnapshot> {
   const cached = snapshotCache.get(scope); if (!force && cached && Date.now() - cached.storedAt < 45_000) return cached.snapshot;
   const running = refreshInFlight.get(scope); if (running) return running;
@@ -264,17 +284,63 @@ async function refreshMarket(env: Env, scope: MarketScope, force = false): Promi
   refreshInFlight.set(scope, task); try { return await task; } finally { refreshInFlight.delete(scope); }
 }
 async function refreshAll(env: Env, force = false) { return Object.fromEntries(await Promise.all(MARKET_SCOPES.map(async (scope) => [scope, await refreshMarket(env, scope, force)] as const))) as Record<MarketScope, MarketSnapshot>; }
+// 對應 chart bucket window 嘅小時計數：minute=6小時，hour=7日，day=90日。
+// 隔住 query 花錯不拉到 payload 同時也拉少 row。
+const HISTORY_WINDOW_HOURS: Record<HistoryInterval, number> = { minute: 6, hour: 24 * 7, day: 24 * 90 };
+const HISTORY_MAX_ROWS: Record<HistoryInterval, number> = { minute: 500, hour: 2_000, day: 5_000 };
+
+// 將輕量 row 重組成後端 API 仍然需要嘅 MarketSnapshot shape（factors/supplementary 留空 array）。
+// 前端 aggregateHistoryForChart 只看 calculatedAt/compositeScore/confidence，其他欄位不影響畫 chart。
+function lightRowToSnapshot(scope: MarketScope, row: LightSnapshotRow): MarketSnapshot {
+  return {
+    market: scope,
+    calculatedAt: row.calculated_at,
+    compositeScore: row.composite_score,
+    regime: row.regime as MarketSnapshot["regime"],
+    confidence: row.confidence,
+    dataStatus: row.data_status as MarketSnapshot["dataStatus"],
+    updateIntervalSeconds: 60,
+    factors: [],
+    supplementary: [],
+  };
+}
+
 async function historyForInterval(env: Env, scope: MarketScope, interval: HistoryInterval) {
-  const meta = INTERVAL_META[interval]; const result = await env.DB.prepare("SELECT payload FROM market_snapshots WHERE market = ? ORDER BY calculated_at DESC LIMIT ?").bind(scope, meta.maxRawRows).all<SnapshotRow>();
+  const meta = INTERVAL_META[interval];
+  const since = new Date(Date.now() - HISTORY_WINDOW_HOURS[interval] * 60 * 60_000).toISOString();
+  const maxRows = HISTORY_MAX_ROWS[interval];
+  // 只選 chart 需要嘅輕量欄位 + WHERE calculated_at >= ? 收窩範圍 + 較小 LIMIT。
+  // 使用新索引 (market, calculated_at DESC)，D1 rows_read 大幅下降、CPU 並免要 parse 大 payload JSON。
+  const result = await env.DB.prepare(
+    "SELECT composite_score, regime, confidence, data_status, calculated_at FROM market_snapshots WHERE market = ? AND calculated_at >= ? ORDER BY calculated_at DESC LIMIT ?"
+  ).bind(scope, since, maxRows).all<LightSnapshotRow>();
   const buckets = new Map<number, { snapshot: MarketSnapshot; samples: number }>();
-  for (const row of result.results) { try { const snapshot = JSON.parse(row.payload) as MarketSnapshot; const timestamp = new Date(snapshot.calculatedAt).getTime(), key = Math.floor(timestamp / meta.bucketMs) * meta.bucketMs, current = buckets.get(key); if (!current || new Date(current.snapshot.calculatedAt).getTime() <= timestamp) buckets.set(key, { snapshot, samples: (current?.samples ?? 0) + 1 }); else current.samples += 1; } catch { /* skip malformed legacy row */ } }
-  return Array.from(buckets.values()).sort((a, b) => new Date(a.snapshot.calculatedAt).getTime() - new Date(b.snapshot.calculatedAt).getTime()).map(({ snapshot }) => snapshot);
+  for (const row of result.results) {
+    const timestamp = new Date(row.calculated_at).getTime();
+    if (!Number.isFinite(timestamp)) continue;
+    const key = Math.floor(timestamp / meta.bucketMs) * meta.bucketMs;
+    const current = buckets.get(key);
+    if (!current || new Date(current.snapshot.calculatedAt).getTime() <= timestamp) {
+      buckets.set(key, { snapshot: lightRowToSnapshot(scope, row), samples: (current?.samples ?? 0) + 1 });
+    } else {
+      current.samples += 1;
+    }
+  }
+  return Array.from(buckets.values())
+    .sort((a, b) => new Date(a.snapshot.calculatedAt).getTime() - new Date(b.snapshot.calculatedAt).getTime())
+    .map(({ snapshot }) => snapshot);
 }
 async function api(request: Request, env: Env) {
   const url = new URL(request.url), interval = parseInterval(url.searchParams.get("interval") ?? url.searchParams.get("range"));
   if (url.pathname === "/api/health") return json({ ok: true, service: "market-regime-pulse", timestamp: new Date().toISOString() });
   if (url.pathname === "/api/overview" && request.method === "GET") { const snapshots = await refreshAll(env); const histories = Object.fromEntries(await Promise.all(MARKET_SCOPES.map(async (scope) => [scope, await historyForInterval(env, scope, interval)] as const))) as Record<MarketScope, MarketSnapshot[]>; return json({ snapshots, histories, interval }); }
   if (url.pathname === "/api/refresh" && request.method === "POST") { const snapshots = await refreshAll(env, true); const histories = Object.fromEntries(await Promise.all(MARKET_SCOPES.map(async (scope) => [scope, await historyForInterval(env, scope, interval)] as const))) as Record<MarketScope, MarketSnapshot[]>; return json({ snapshots, histories, interval }); }
+  if (url.pathname === "/api/cleanup" && request.method === "POST") {
+    const daysParam = Number(url.searchParams.get("days"));
+    const days = Number.isFinite(daysParam) && daysParam > 0 && daysParam <= 365 ? Math.round(daysParam) : RETENTION_DAYS;
+    const result = await cleanupOldSnapshots(env, days);
+    return json({ ok: true, ...result });
+  }
   return json({ error: "Not found" }, 404);
 }
 
@@ -299,5 +365,12 @@ export default {
       return staticResponse(url.pathname);
     } catch (error) { return withAllowedCors(request, json({ error: error instanceof Error ? error.message : "Unexpected service error" }, 502)); }
   },
-  async scheduled(_controller: unknown, env: Env, ctx: { waitUntil(promise: Promise<unknown>): void }) { ctx.waitUntil(refreshAll(env, true)); },
+  async scheduled(controller: { cron?: string; scheduledTime?: number }, env: Env, ctx: { waitUntil(promise: Promise<unknown>): void }) {
+    ctx.waitUntil(refreshAll(env, true));
+    // 每小時 0 分嗰次順便清理舊資料；其他 cron tick 唔會做 DELETE，避免每 5 分鐘都 write。
+    const scheduledTime = controller?.scheduledTime ?? Date.now();
+    if (new Date(scheduledTime).getUTCMinutes() === 0) {
+      ctx.waitUntil(cleanupOldSnapshots(env).then((r) => console.log("[cleanup]", r)).catch((e) => console.error("[cleanup] failed", e)));
+    }
+  },
 };

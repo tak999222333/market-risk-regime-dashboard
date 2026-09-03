@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
-import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, CheckCircle2, ChevronRight, Clock3, Database, Globe2, Landmark, Layers3, LineChart as LineChartIcon, RefreshCw, ShieldAlert, TrendingDown, TrendingUp, TriangleAlert } from "lucide-react";
+import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, CheckCircle2, ChevronRight, Clock3, Database, Globe2, Landmark, Layers3, LineChart as LineChartIcon, RefreshCw, ShieldAlert, Trash2, TrendingDown, TrendingUp, TriangleAlert } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { MARKET_SCOPE_META, type LiveMarketFactor, type MarketFactorKey, type MarketScope, type MarketSnapshot, type SupplementalSignal } from "../../../shared/marketTypes";
@@ -15,6 +15,13 @@ async function getMarketOverview(interval: HistoryInterval, refresh = false): Pr
   if (!response.ok) throw new Error(`市場資料請求失敗（${response.status}）`);
   if (!(response.headers.get("content-type") ?? "").includes("application/json")) throw new Error("市場資料服務回傳格式不正確，請稍後重試。");
   return response.json() as Promise<MarketOverview>;
+}
+
+type CleanupResult = { ok: boolean; retentionDays: number; cutoff: string; before: number; after: number; deleted: number; ranAt: string };
+async function cleanupOldSnapshots(days = 5): Promise<CleanupResult> {
+  const response = await fetch(`/api/cleanup?days=${days}`, { method: "POST" });
+  if (!response.ok) throw new Error(`清理失敗（${response.status}）`);
+  return response.json() as Promise<CleanupResult>;
 }
 
 const factorIcons: Record<MarketFactorKey, typeof TrendingUp> = { equity: TrendingUp, volatility: Activity, credit: ShieldAlert, safeHaven: Globe2, crossAsset: BarChart3 };
@@ -64,6 +71,17 @@ export default function Home({ market = "global" }: HomeProps) {
   const queryClient = useQueryClient();
   const overviewQuery = useQuery({ queryKey: ["market-regime-overview", historyInterval], queryFn: () => getMarketOverview(historyInterval), refetchInterval: 60_000, refetchOnWindowFocus: true, retry: 1 });
   const refreshMutation = useMutation({ mutationFn: () => getMarketOverview(historyInterval, true), onSuccess: () => queryClient.invalidateQueries({ queryKey: ["market-regime-overview", historyInterval] }) });
+  const cleanupMutation = useMutation({
+    mutationFn: () => cleanupOldSnapshots(5),
+    onSuccess: (r) => {
+      queryClient.invalidateQueries({ queryKey: ["market-regime-overview", historyInterval] });
+      window.alert(`已清理 ${r.deleted.toLocaleString()} 行 5 日前資料\n現有 ${r.after.toLocaleString()} 行（原 ${r.before.toLocaleString()} 行）`);
+    },
+    onError: (e: unknown) => window.alert(`清理失敗：${e instanceof Error ? e.message : "未知錯誤"}`),
+  });
+  const handleCleanup = () => {
+    if (window.confirm("確定要清理 5 日前嘅歷史資料？（唔可以還原）")) cleanupMutation.mutate();
+  };
   const data = overviewQuery.data;
   const snapshot = data?.snapshots[market];
   const history = data?.histories[market] ?? [];
@@ -89,7 +107,7 @@ export default function Home({ market = "global" }: HomeProps) {
   const rangeLow = trend.length ? Math.min(...trend.map((point) => point.score)) : null;
 
   return <div className="min-h-screen overflow-x-hidden bg-[#11131A] text-[#F3F0E9] selection:bg-[#D9F37A] selection:text-[#10120E]"><div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_12%_0%,rgba(217,243,122,0.12),transparent_24rem),radial-gradient(circle_at_88%_24%,rgba(122,153,243,0.12),transparent_28rem)]" /><main className="relative mx-auto max-w-[1480px] px-4 pb-10 pt-5 sm:px-7 lg:px-10 lg:pt-7">
-    <header className="mb-7 flex flex-col gap-5 border-b border-white/10 pb-5 xl:flex-row xl:items-center xl:justify-between"><div className="flex flex-wrap items-center gap-4"><div className="grid h-11 w-11 place-items-center rounded-2xl bg-[#D9F37A] text-[#15180E] shadow-[0_0_32px_rgba(217,243,122,0.16)]"><Layers3 className="h-5 w-5" strokeWidth={2.5} /></div><div><div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-[#A5A8B0]">Market Regime <span className="h-1.5 w-1.5 rounded-full bg-[#6CE2C2]" /> Live data engine</div><h1 className="mt-1 font-[var(--font-display)] text-xl tracking-[-0.03em] text-white sm:text-2xl">{scopeMeta.label}風險狀態</h1></div><MarketNav active={market} /></div><div className="flex flex-wrap items-center gap-3 text-xs"><div className={`flex items-center gap-2 rounded-full border px-3 py-2 ${snapshot.dataStatus === "fresh" ? "border-[#6CE2C2]/25 bg-[#6CE2C2]/[0.06] text-[#A8DAD0]" : "border-[#F1BE71]/25 bg-[#F1BE71]/[0.06] text-[#E7C993]"}`}><Database className="h-3.5 w-3.5" /> {snapshot.dataStatus === "fresh" ? "所有資料來源可用" : "已採用最近成功值備援"}</div><button type="button" onClick={() => refreshMutation.mutate()} disabled={refreshMutation.isPending} className="inline-flex items-center gap-2 rounded-full bg-[#D9F37A] px-3 py-2 font-semibold text-[#17190F] transition hover:bg-[#e7fa9b] disabled:cursor-wait disabled:opacity-60"><RefreshCw className={`h-3.5 w-3.5 ${refreshMutation.isPending ? "animate-spin" : ""}`} /> {refreshMutation.isPending ? "更新三市場中" : "立即刷新全部"}</button></div></header>
+    <header className="mb-7 flex flex-col gap-5 border-b border-white/10 pb-5 xl:flex-row xl:items-center xl:justify-between"><div className="flex flex-wrap items-center gap-4"><div className="grid h-11 w-11 place-items-center rounded-2xl bg-[#D9F37A] text-[#15180E] shadow-[0_0_32px_rgba(217,243,122,0.16)]"><Layers3 className="h-5 w-5" strokeWidth={2.5} /></div><div><div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-[#A5A8B0]">Market Regime <span className="h-1.5 w-1.5 rounded-full bg-[#6CE2C2]" /> Live data engine</div><h1 className="mt-1 font-[var(--font-display)] text-xl tracking-[-0.03em] text-white sm:text-2xl">{scopeMeta.label}風險狀態</h1></div><MarketNav active={market} /></div><div className="flex flex-wrap items-center gap-3 text-xs"><div className={`flex items-center gap-2 rounded-full border px-3 py-2 ${snapshot.dataStatus === "fresh" ? "border-[#6CE2C2]/25 bg-[#6CE2C2]/[0.06] text-[#A8DAD0]" : "border-[#F1BE71]/25 bg-[#F1BE71]/[0.06] text-[#E7C993]"}`}><Database className="h-3.5 w-3.5" /> {snapshot.dataStatus === "fresh" ? "所有資料來源可用" : "已採用最近成功值備援"}</div><button type="button" onClick={() => refreshMutation.mutate()} disabled={refreshMutation.isPending} className="inline-flex items-center gap-2 rounded-full bg-[#D9F37A] px-3 py-2 font-semibold text-[#17190F] transition hover:bg-[#e7fa9b] disabled:cursor-wait disabled:opacity-60"><RefreshCw className={`h-3.5 w-3.5 ${refreshMutation.isPending ? "animate-spin" : ""}`} /> {refreshMutation.isPending ? "更新三市場中" : "立即刷新全部"}</button><button type="button" onClick={handleCleanup} disabled={cleanupMutation.isPending} title="刪除 5 日前歷史，減低 D1 rows_read" className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/[0.04] px-3 py-2 font-semibold text-[#E5E7EB] transition hover:bg-white/[0.08] disabled:cursor-wait disabled:opacity-60"><Trash2 className={`h-3.5 w-3.5 ${cleanupMutation.isPending ? "animate-pulse" : ""}`} /> {cleanupMutation.isPending ? "清理中" : "清理 5 日前資料"}</button></div></header>
 
     <ComparisonCards snapshots={data.snapshots} active={market} />
     {spread >= 35 && <div className="mb-6 flex gap-3 rounded-2xl border border-[#7A99F3]/25 bg-[#7A99F3]/[0.07] p-4"><Activity className="mt-0.5 h-4 w-4 shrink-0 text-[#9EB2F8]" /><p className="text-xs leading-5 text-[#C5CEFB]">目前三市場分數相差 {spread} 點，顯示跨市場風險訊號存在明顯分歧；不宜只用單一地區的結論推斷整體風險胃納。</p></div>}
