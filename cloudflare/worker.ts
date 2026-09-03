@@ -36,7 +36,12 @@ const sourceInFlight = new Map<string, Promise<unknown>>();
 const snapshotCache = new Map<MarketScope, { snapshot: MarketSnapshot; storedAt: number }>();
 const refreshInFlight = new Map<MarketScope, Promise<MarketSnapshot>>();
 
-function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } }); }
+function json(value: unknown, status = 200, extraHeaders: Record<string, string> = {}) {
+  // 先用 Headers instance，它才能 normalize header name case (Cache-Control vs cache-control)
+  const headers = new Headers({ "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+  for (const [k, v] of Object.entries(extraHeaders)) headers.set(k, v); // set() overwrites even with different casing
+  return new Response(JSON.stringify(value), { status, headers });
+}
 function staticResponse(pathname: string) {
   const asset = STATIC_ASSETS[pathname] ?? STATIC_ASSETS["/index.html"];
   return new Response(asset.body, { headers: { "content-type": asset.contentType, "cache-control": pathname === "/index.html" || pathname === "/" ? "no-cache" : "public, max-age=31536000, immutable" } });
@@ -254,11 +259,27 @@ async function fetchReliableWorkerSnapshot(scope: MarketScope): Promise<MarketSn
   return { market: scope, calculatedAt: new Date().toISOString(), compositeScore, regime: determineMarketRegime(scope, compositeScore), confidence: Math.max(40, baseConfidence + confidenceImpact), dataStatus: usable.length === factors.length ? "fresh" : "partial", updateIntervalSeconds: 60, factors, supplementary };
 }
 
-type SnapshotRow = { payload: string };
-// 輕量 row：只拉 chart 需要嘅欄位，唔拉 payload TEXT（100KB+）。
+// 輕量 row：chart + latest 都只用 5 個 lightweight 欄位。唔再儲 payload TEXT（100KB+）。
 type LightSnapshotRow = { composite_score: number; regime: string; confidence: number; data_status: string; calculated_at: string };
-async function latestSnapshot(env: Env, scope: MarketScope) { const row = await env.DB.prepare("SELECT payload FROM market_snapshots WHERE market = ? ORDER BY calculated_at DESC LIMIT 1").bind(scope).first<SnapshotRow>(); try { return row ? JSON.parse(row.payload) as MarketSnapshot : undefined; } catch { return undefined; } }
-async function storeSnapshot(env: Env, snapshot: MarketSnapshot) { await env.DB.prepare("INSERT INTO market_snapshots (market, composite_score, regime, confidence, data_status, payload, calculated_at) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(snapshot.market, snapshot.compositeScore, snapshot.regime, snapshot.confidence, snapshot.dataStatus, JSON.stringify(snapshot), snapshot.calculatedAt).run(); }
+async function latestSnapshot(env: Env, scope: MarketScope): Promise<MarketSnapshot | undefined> {
+  const row = await env.DB.prepare(
+    "SELECT composite_score, regime, confidence, data_status, calculated_at FROM market_snapshots WHERE market = ? ORDER BY calculated_at DESC LIMIT 1"
+  ).bind(scope).first<LightSnapshotRow>();
+  return row ? lightRowToSnapshot(scope, row) : undefined;
+}
+// 舊 schema 有 payload TEXT NOT NULL；為咗兼容未跑 migration 嘅環境，寫入時仍然填空字符串。
+// 跑咗 migrations/0002_drop_payload.sql 之後個 column 就會消失，storeSnapshot 會自動 fallback 到新 schema。
+async function storeSnapshot(env: Env, snapshot: MarketSnapshot) {
+  try {
+    await env.DB.prepare(
+      "INSERT INTO market_snapshots (market, composite_score, regime, confidence, data_status, calculated_at) VALUES (?, ?, ?, ?, ?, ?)"
+    ).bind(snapshot.market, snapshot.compositeScore, snapshot.regime, snapshot.confidence, snapshot.dataStatus, snapshot.calculatedAt).run();
+  } catch {
+    await env.DB.prepare(
+      "INSERT INTO market_snapshots (market, composite_score, regime, confidence, data_status, payload, calculated_at) VALUES (?, ?, ?, ?, ?, '', ?)"
+    ).bind(snapshot.market, snapshot.compositeScore, snapshot.regime, snapshot.confidence, snapshot.dataStatus, snapshot.calculatedAt).run();
+  }
+}
 
 // 只保留最近 N 日資料，減低 D1 rows_read。回傳統計資訊（清理前後行數同刪咗幾多）。
 const RETENTION_DAYS = 5;
@@ -330,11 +351,38 @@ async function historyForInterval(env: Env, scope: MarketScope, interval: Histor
     .sort((a, b) => new Date(a.snapshot.calculatedAt).getTime() - new Date(b.snapshot.calculatedAt).getTime())
     .map(({ snapshot }) => snapshot);
 }
-async function api(request: Request, env: Env) {
+// SWR headers：browser 都能 cache、Cloudflare edge 都 cache。
+// public,max-age=60 = client cache 60 秒；s-maxage=60 = edge cache 60 秒；stale-while-revalidate=300 = 5 分鐘內 stale hit 可即回舊鐐埋額重新 fetch。
+const OVERVIEW_CACHE_HEADERS: Record<string, string> = {
+  // 同 default no-store 相接，headers.set() 會 override
+  "cache-control": "public, max-age=60, s-maxage=60, stale-while-revalidate=300",
+};
+
+async function api(request: Request, env: Env, ctx: { waitUntil(promise: Promise<unknown>): void }) {
   const url = new URL(request.url), interval = parseInterval(url.searchParams.get("interval") ?? url.searchParams.get("range"));
   if (url.pathname === "/api/health") return json({ ok: true, service: "market-regime-pulse", timestamp: new Date().toISOString() });
-  if (url.pathname === "/api/overview" && request.method === "GET") { const snapshots = await refreshAll(env); const histories = Object.fromEntries(await Promise.all(MARKET_SCOPES.map(async (scope) => [scope, await historyForInterval(env, scope, interval)] as const))) as Record<MarketScope, MarketSnapshot[]>; return json({ snapshots, histories, interval }); }
-  if (url.pathname === "/api/refresh" && request.method === "POST") { const snapshots = await refreshAll(env, true); const histories = Object.fromEntries(await Promise.all(MARKET_SCOPES.map(async (scope) => [scope, await historyForInterval(env, scope, interval)] as const))) as Record<MarketScope, MarketSnapshot[]>; return json({ snapshots, histories, interval }); }
+  // Cloudflare Workers 有 caches.default（DOM CacheStorage 冇），未裝 @cloudflare/workers-types，暫 cast。
+  const workerCaches = caches as unknown as { default: Cache };
+  if (url.pathname === "/api/overview" && request.method === "GET") {
+    // Edge cache lookup：cache key = URL + interval。hit 就直接回，不碰 D1。
+    const cache = workerCaches.default;
+    const cacheKey = new Request(url.toString(), { method: "GET" });
+    const cached = await cache.match(cacheKey);
+    if (cached) return new Response(cached.body, cached);
+    const snapshots = await refreshAll(env);
+    const histories = Object.fromEntries(await Promise.all(MARKET_SCOPES.map(async (scope) => [scope, await historyForInterval(env, scope, interval)] as const))) as Record<MarketScope, MarketSnapshot[]>;
+    const response = json({ snapshots, histories, interval }, 200, OVERVIEW_CACHE_HEADERS);
+    ctx.waitUntil(cache.put(cacheKey, response.clone()));
+    return response;
+  }
+  if (url.pathname === "/api/refresh" && request.method === "POST") {
+    const snapshots = await refreshAll(env, true);
+    const histories = Object.fromEntries(await Promise.all(MARKET_SCOPES.map(async (scope) => [scope, await historyForInterval(env, scope, interval)] as const))) as Record<MarketScope, MarketSnapshot[]>;
+    // 手動 refresh 同時 invalidate edge cache 以後下次 GET 都拉新
+    const cache = workerCaches.default;
+    ctx.waitUntil(Promise.all(["minute", "hour", "day"].map((i) => cache.delete(new Request(`${url.origin}/api/overview?interval=${i}`, { method: "GET" })))));
+    return json({ snapshots, histories, interval });
+  }
   if (url.pathname === "/api/cleanup" && request.method === "POST") {
     const daysParam = Number(url.searchParams.get("days"));
     const days = Number.isFinite(daysParam) && daysParam > 0 && daysParam <= 365 ? Math.round(daysParam) : RETENTION_DAYS;
@@ -357,11 +405,11 @@ function withAllowedCors(request: Request, response: Response): Response {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: { waitUntil(promise: Promise<unknown>): void }): Promise<Response> {
     const url = new URL(request.url);
     try {
       if (url.pathname.startsWith("/api/") && request.method === "OPTIONS") return withAllowedCors(request, new Response(null, { status: 204 }));
-      if (url.pathname.startsWith("/api/")) return withAllowedCors(request, await api(request, env));
+      if (url.pathname.startsWith("/api/")) return withAllowedCors(request, await api(request, env, ctx));
       return staticResponse(url.pathname);
     } catch (error) { return withAllowedCors(request, json({ error: error instanceof Error ? error.message : "Unexpected service error" }, 502)); }
   },

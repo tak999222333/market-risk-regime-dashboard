@@ -69,7 +69,9 @@ export default function Home({ market = "global" }: HomeProps) {
   const [location, navigate] = useLocation();
   const [historyInterval, setHistoryInterval] = useState<HistoryInterval>(() => intervalFromLocation());
   const queryClient = useQueryClient();
-  const overviewQuery = useQuery({ queryKey: ["market-regime-overview", historyInterval], queryFn: () => getMarketOverview(historyInterval), refetchInterval: 60_000, refetchOnWindowFocus: true, retry: 1 });
+  // Cron 每 5 分鐘才 run，frontend 唔需要每分鐘 poll。
+  // 300_000ms = 5 分鐘，同位 cron（refetchOnWindowFocus 保留令用戶 focus 回電膦時自動拉新數據）
+  const overviewQuery = useQuery({ queryKey: ["market-regime-overview", historyInterval], queryFn: () => getMarketOverview(historyInterval), refetchInterval: 300_000, refetchOnWindowFocus: true, retry: 1 });
   const refreshMutation = useMutation({ mutationFn: () => getMarketOverview(historyInterval, true), onSuccess: () => queryClient.invalidateQueries({ queryKey: ["market-regime-overview", historyInterval] }) });
   const cleanupMutation = useMutation({
     mutationFn: () => cleanupOldSnapshots(5),
